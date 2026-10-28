@@ -1,0 +1,53 @@
+# Authored static frontends. Exact signed source pins are explicit below;
+# final lock/publication handoff and actual build/loader qualification remain
+# required. No alternate runtime is discovered from an artifact basename.
+[package]
+name = "hermit-patching-cli"
+version = "0.5.4"
+edition = "2024"
+license = "BSD-3-Clause"
+publish = false
+repository = "https://github.com/rrnewton/hermit-3rdparty-patching"
+build = "build.rs"
+
+[lib]
+name = "hermit_patching"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hermit-sabre"
+path = "src/bin/hermit-sabre.rs"
+
+[[bin]]
+name = "hermit-e9patch"
+path = "src/bin/hermit-e9patch.rs"
+
+[dependencies]
+anyhow = "1.0.103"
+clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+detcore = { package = "hermit-detcore", version = "0.5.4", git = "https://github.com/rrnewton/hermit", rev = "2bdd4aefcac0199d802786e1434a61c06947e2bd" }
+detcore-model = { version = "0.5.4", git = "https://github.com/rrnewton/hermit", rev = "2bdd4aefcac0199d802786e1434a61c06947e2bd" }
+fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+hermit = { package = "hermit-run", version = "0.5.4", git = "https://github.com/rrnewton/hermit", rev = "2bdd4aefcac0199d802786e1434a61c06947e2bd", default-features = false }
+hermit-resources = { version = "0.5.4", git = "https://github.com/rrnewton/hermit", rev = "2bdd4aefcac0199d802786e1434a61c06947e2bd" }
+goblin = { version = "0.10.7", features = ["elf64"] }
+libc = "0.2.186"
+nix = { version = "0.30.1", features = ["fs", "personality", "ptrace", "signal", "process", "user"] }
+object = { version = "0.40.0", features = ["read"] }
+rand_pcg = { version = "0.10.2", features = ["serde"] }
+reverie = { package = "reverie-core", version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+reverie-rpc-transport = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+reverie-sabre-stats = { version = "0.5.4", path = "../experimental/reverie-sabre-stats" }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+sha2 = "0.10.9"
+tempfile = "3.27.0"
+tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+
+[build-dependencies]
+toml = "0.8.23"
+
+[dev-dependencies]
+pretty_assertions = { version = "1.4.1", features = ["alloc"], default-features = false }
+rand = "0.10.2"
