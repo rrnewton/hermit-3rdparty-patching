@@ -1,0 +1,22 @@
+# Transferred from Reverie 882c91c02b981f56370a2912f0832b04fefc46ec: experimental/riptrace/tool/Cargo.toml.
+# Maintained in this extension; original native ownership is recorded in the source mapping.
+
+[package]
+name = "riptrace-tool"
+description = "Instrumentation tool implementation for the experimental Reverie riptrace frontend."
+version = "0.5.4"
+authors = ["Meta Platforms"]
+edition = "2021"
+repository = "https://github.com/rrnewton/hermit-3rdparty-patching"
+license = "BSD-2-Clause"
+
+[lib]
+name = "riptrace_plugin"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc = "0.2.139"
+reverie-sabre = { version = "0.5.4", path = "../../reverie-sabre" }
+reverie-syscalls = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+riptrace-rpc = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+syscalls = { version = "0.6.7", features = ["serde"] }

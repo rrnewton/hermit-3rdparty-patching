@@ -1,0 +1,38 @@
+# Source-owned e9patch example preload/helper/test transfer from Reverie 882c91c0.
+# The core Tool-only API is source-ready but needs its final exact Git pin.
+[package]
+name = "reverie-patching-examples"
+version = "0.5.4"
+authors = ["Meta Platforms"]
+edition = "2024"
+repository = "https://github.com/rrnewton/hermit-3rdparty-patching"
+license = "BSD-2-Clause"
+publish = false
+
+[lib]
+name = "reverie_patching_examples"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "patching-recorder"
+path = "src/bin/recorder.rs"
+
+[[bin]]
+name = "patching-counter2"
+path = "src/bin/counter2.rs"
+
+[dependencies]
+anyhow = "1.0.103"
+clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+libc = "0.2.186"
+reverie = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944", package = "reverie-core" }
+reverie-e9patch = { version = "0.5.4", path = "../reverie-e9patch", default-features = false }
+reverie-examples = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944", default-features = false, features = ["host"] }
+reverie-liteinst = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944", default-features = false }
+reverie-host = { version = "0.5.4", path = "../experimental/reverie-host" }
+reverie-util = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

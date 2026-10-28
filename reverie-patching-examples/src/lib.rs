@@ -1,0 +1,237 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Preload hosting support for production Reverie example tools.
+
+#![forbid(unsafe_op_in_unsafe_fn)]
+
+pub mod backend;
+// The generic Tool types have one core source owner. This Tool-only selection
+// does not activate core's first-party preload constructor or allocator.
+reverie_liteinst::declare_legacy_scoped_tool_allocator!();
+
+use reverie_examples::tools::{counter1, counter2, noop, recorder_tool, strace};
+use std::ffi::CStr;
+use std::ffi::OsStr;
+use std::mem::MaybeUninit;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
+
+/// Narrow concrete Tool shared by the e9patch preload and its real-tool test.
+pub mod e9patch_smoke;
+
+/// Runs the production Noop Tool through e9patch's direct AOT path.
+///
+/// The sealed selector and coordinator both use the same concrete `NoopTool`,
+/// while the caller supplies the example preload DSO that embeds it. Noop
+/// subscribes to no syscalls, so rewritten guest sites retain their native
+/// results.
+pub async fn run_e9patch_noop_with_preload(
+    command: reverie::process::Command,
+    preload: impl Into<std::path::PathBuf>,
+) -> Result<(reverie::process::Output, ()), reverie::Error> {
+    reverie_e9patch::E9patchBackend::run_direct_with_output_and_preload_data::<noop::NoopTool>(
+        command,
+        (),
+        preload,
+        b"noop",
+    )
+    .await
+}
+
+/// Runs the production Counter1 Tool through e9patch's direct AOT path.
+///
+/// The sealed selector and coordinator use the same concrete `CounterLocal`,
+/// and the returned total comes from its coordinator-owned `CounterGlobal`.
+/// Counter1 subscribes to every syscall. Residuals from the injected e9patch
+/// loader and Reverie payload mappings before the first direct event run
+/// natively and are not counted; application residuals and post-activation
+/// runtime residuals fail closed.
+pub async fn run_e9patch_counter1_with_preload(
+    command: reverie::process::Command,
+    preload: impl Into<std::path::PathBuf>,
+) -> Result<(reverie::process::Output, u64), reverie::Error> {
+    let (output, global) =
+        reverie_e9patch::E9patchBackend::run_direct_with_output_and_preload_data::<
+            counter1::CounterLocal,
+        >(command, (), preload, b"counter1")
+        .await?;
+    Ok((output, global.total()))
+}
+
+/// Runs the production Counter2 Tool through e9patch's direct AOT path.
+///
+/// Counter2 differs from Counter1 by accumulating per-thread syscall counts in
+/// `ThreadState` and contributing them to the process-tree global only at the
+/// exit lifecycle: `on_exit_thread` folds the thread total into the local
+/// process count and `on_exit_process` sends a single `IncrMsg` to the
+/// coordinator-owned `CounterGlobal`. This exercises e9patch's direct exit-event
+/// path (`tool_host::finish_tool_exit`), which Counter1/Strace/Noop never
+/// trigger. The returned tuple is `CounterGlobal::totals()`:
+/// `(total_syscalls, exited_procs, exited_threads)`.
+pub async fn run_e9patch_counter2_with_preload(
+    command: reverie::process::Command,
+    preload: impl Into<std::path::PathBuf>,
+) -> Result<(reverie::process::Output, (u64, u64, u64)), reverie::Error> {
+    let (output, global) =
+        reverie_e9patch::E9patchBackend::run_direct_with_output_and_preload_data::<
+            counter2::CounterLocal,
+        >(command, (), preload, b"counter2")
+        .await?;
+    Ok((output, global.totals()))
+}
+
+/// Runs the production Strace Tool through e9patch's direct AOT path with a
+/// single `write` syscall filter.
+///
+/// The fixed filter keeps unsubscribed guest syscalls native while proving a
+/// rewritten root-image write reaches the existing Strace handler and is
+/// injected through the direct `Guest` implementation. A subscribed residual
+/// write remains outside the direct host boundary and fails closed.
+pub async fn run_e9patch_write_strace_with_preload(
+    command: reverie::process::Command,
+    preload: impl Into<std::path::PathBuf>,
+) -> Result<reverie::process::Output, reverie::Error> {
+    let config = strace::Config {
+        filters: vec![strace::Filter {
+            inverse: false,
+            syscalls: vec![reverie::syscalls::Sysno::write],
+        }],
+    };
+    let (output, _) = reverie_e9patch::E9patchBackend::run_direct_with_output_and_preload_data::<
+        strace::Strace,
+    >(command, config, preload, b"strace")
+    .await?;
+    Ok(output)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-139): Review the example-tool preload constructor and selector boundary.
+#[used]
+#[unsafe(link_section = ".init_array")]
+static REVERIE_EXAMPLE_INIT: unsafe extern "C" fn(
+    libc::c_int,
+    *mut *mut libc::c_char,
+    *mut *mut libc::c_char,
+) = initialize;
+
+const E9PATCH_EXAMPLE_TOOL_ENV: &str = "REVERIE_E9PATCH_EXAMPLE_TOOL";
+
+unsafe fn loaded_as_preload() -> bool {
+    let mut info = MaybeUninit::<libc::Dl_info>::uninit();
+    let found = unsafe {
+        libc::dladdr(
+            initialize as *const () as *const libc::c_void,
+            info.as_mut_ptr(),
+        )
+    };
+    if found == 0 {
+        return false;
+    }
+    let info = unsafe { info.assume_init() };
+    if info.dli_fname.is_null() {
+        return false;
+    }
+    let mapped_name = unsafe { CStr::from_ptr(info.dli_fname) }.to_bytes();
+    if mapped_name.is_empty() {
+        return false;
+    }
+    let mapped_path = Path::new(OsStr::from_bytes(mapped_name));
+    match (mapped_path.canonicalize(), std::env::current_exe()) {
+        (Ok(mapped_path), Ok(executable)) => mapped_path != executable,
+        _ => false,
+    }
+}
+
+unsafe extern "C" fn initialize(
+    _argc: libc::c_int,
+    _argv: *mut *mut libc::c_char,
+    _environment: *mut *mut libc::c_char,
+) {
+    if !unsafe { loaded_as_preload() } {
+        return;
+    }
+    let e9patch_bootstrap = match unsafe { reverie_e9patch::take_preload_bootstrap() } {
+        Ok(bootstrap) => bootstrap,
+        Err(error) => fail(&format!("invalid e9patch preload bootstrap: {error}")),
+    };
+    if let Some(bootstrap) = e9patch_bootstrap {
+        match unsafe { reverie_e9patch::take_preload_bootstrap() } {
+            Ok(None) => {}
+            Ok(Some(_)) => fail("e9patch preload bootstrap was not consumed"),
+            Err(error) => fail(&format!("invalid residual e9patch bootstrap: {error}")),
+        }
+        let selected = match String::from_utf8(bootstrap.tool_data) {
+            Ok(selected) => selected,
+            Err(_) => fail("e9patch example tool selector is not valid UTF-8"),
+        };
+        let result = match selected.as_str() {
+            "e9patch-smoke" => unsafe {
+                reverie_e9patch::install_tool_from_bootstrap::<e9patch_smoke::AotCounterTool>(
+                    &bootstrap.coordinator,
+                )
+            },
+            "noop" => unsafe {
+                reverie_e9patch::install_tool_from_bootstrap::<noop::NoopTool>(
+                    &bootstrap.coordinator,
+                )
+            },
+            "counter1" => unsafe {
+                reverie_e9patch::install_tool_from_bootstrap::<counter1::CounterLocal>(
+                    &bootstrap.coordinator,
+                )
+            },
+            "counter2" => unsafe {
+                reverie_e9patch::install_tool_from_bootstrap::<counter2::CounterLocal>(
+                    &bootstrap.coordinator,
+                )
+            },
+            "strace" => unsafe {
+                reverie_e9patch::install_tool_from_bootstrap::<strace::Strace>(
+                    &bootstrap.coordinator,
+                )
+            },
+            recorder_tool::NAME => unsafe {
+                reverie_e9patch::install_tool_from_bootstrap::<recorder_tool::Recorder>(
+                    &bootstrap.coordinator,
+                )
+            },
+            other => fail(&format!("unknown e9patch bootstrap tool {other:?}")),
+        };
+        if let Err(error) = result {
+            fail(&format!(
+                "e9patch bootstrap tool initialization failed: {error}"
+            ));
+        }
+        return;
+    }
+    if let Some(socket) = std::env::var_os(reverie_e9patch::COORDINATOR_ENV) {
+        let selected = std::env::var_os(E9PATCH_EXAMPLE_TOOL_ENV)
+            .and_then(|value| value.into_string().ok())
+            .unwrap_or_else(|| fail(&format!("missing {E9PATCH_EXAMPLE_TOOL_ENV}")));
+        // SAFETY: this constructor runs before application-created threads.
+        unsafe { std::env::remove_var(E9PATCH_EXAMPLE_TOOL_ENV) };
+        let result = match selected.as_str() {
+            // TODO-HUMAN-REVIEW(PR-269): Review the
+            // concrete e9patch Tool selection used by the direct AOT proof.
+            "e9patch-smoke" => unsafe {
+                reverie_e9patch::install_tool::<e9patch_smoke::AotCounterTool>(socket)
+            },
+            other => fail(&format!("unknown e9patch example tool {other:?}")),
+        };
+        if let Err(error) = result {
+            fail(&format!("e9patch tool initialization failed: {error}"));
+        }
+        return;
+    }
+}
+
+fn fail(message: &str) -> ! {
+    eprintln!("reverie-examples preload: {message}");
+    unsafe { libc::_exit(127) }
+}
