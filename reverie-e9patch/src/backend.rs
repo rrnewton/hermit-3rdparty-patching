@@ -62,6 +62,29 @@ const PRELOAD_BOOTSTRAP_MAX_BYTES: usize = 4096;
 /// matching LiteInst's `REVERIE_LITEINST_TOOL_PRELOAD` contract.
 pub const TOOL_PRELOAD_ENV: &str = "REVERIE_E9PATCH_TOOL_PRELOAD";
 
+/// Caller policy for operations the generic direct Tool host cannot support.
+/// CLI frontends may select errno continuation only from their explicit
+/// `--allow-unsupported-syscalls` option. Ambient environment or selecting the
+/// direct mechanism never selects this policy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UnsupportedSyscallPolicy {
+    /// Print the named refusal and terminate the run.
+    #[default]
+    Refuse,
+    /// Print the same named refusal, then return the unsupported errno.
+    WarnAndReturnErrno,
+}
+
+fn configure_unsupported_syscall_policy(command: &mut Command, policy: UnsupportedSyscallPolicy) {
+    command.env(
+        crate::runtime::UNSUPPORTED_SYSCALL_POLICY_ENV,
+        match policy {
+            UnsupportedSyscallPolicy::Refuse => "0",
+            UnsupportedSyscallPolicy::WarnAndReturnErrno => "1",
+        },
+    );
+}
+
 /// Coordinator path and opaque tool-specific bytes consumed by an e9patch
 /// preload constructor.
 pub struct PreloadBootstrap {
@@ -611,8 +634,15 @@ impl E9patchBackend {
     where
         T: Tool + 'static,
     {
-        let (wait, global) =
-            launch_direct::<T>(command, config, preload.into(), false, None).await?;
+        let (wait, global) = launch_direct::<T>(
+            command,
+            config,
+            preload.into(),
+            false,
+            None,
+            UnsupportedSyscallPolicy::Refuse,
+        )
+        .await?;
         match wait {
             ChildWait::Status(status) => Ok((status.into(), global)),
             ChildWait::Output(_) => unreachable!("status run returned captured output"),
@@ -641,8 +671,15 @@ impl E9patchBackend {
     {
         command.stdout(reverie::process::Stdio::piped());
         command.stderr(reverie::process::Stdio::piped());
-        let (wait, global) =
-            launch_direct::<T>(command, config, preload.into(), true, None).await?;
+        let (wait, global) = launch_direct::<T>(
+            command,
+            config,
+            preload.into(),
+            true,
+            None,
+            UnsupportedSyscallPolicy::Refuse,
+        )
+        .await?;
         match wait {
             ChildWait::Output(output) => Ok((into_reverie_output(output), global)),
             ChildWait::Status(_) => unreachable!("output run returned only a status"),
@@ -662,10 +699,33 @@ impl E9patchBackend {
     /// protocol violation even when its serialized types happen to be layout-
     /// compatible.
     pub async fn run_direct_with_output_and_preload_data<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+    ) -> Result<(Output, T::GlobalState), Error>
+    where
+        T: Tool + 'static,
+    {
+        Self::run_direct_with_output_and_preload_data_with_policy::<T>(
+            command,
+            config,
+            preload,
+            tool_data,
+            UnsupportedSyscallPolicy::Refuse,
+        )
+        .await
+    }
+
+    /// The sealed direct Tool API with an explicit caller unsupported-syscall
+    /// policy. This is separate from the Tool's configuration and does not
+    /// infer permission from the environment or execution mechanism.
+    pub async fn run_direct_with_output_and_preload_data_with_policy<T>(
         mut command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
         preload: impl Into<PathBuf>,
         tool_data: impl Into<Vec<u8>>,
+        policy: UnsupportedSyscallPolicy,
     ) -> Result<(Output, T::GlobalState), Error>
     where
         T: Tool + 'static,
@@ -678,6 +738,7 @@ impl E9patchBackend {
             preload.into(),
             true,
             Some(tool_data.into()),
+            policy,
         )
         .await?;
         match wait {
@@ -709,6 +770,7 @@ impl E9patchBackend {
             preload.into(),
             true,
             Some(tool_data.into()),
+            UnsupportedSyscallPolicy::Refuse,
         )
         .await?;
         match wait {
@@ -909,39 +971,70 @@ fn into_reverie_output(output: std::process::Output) -> Output {
     }
 }
 
-fn drain_pipe<R>(mut pipe: R) -> std::thread::JoinHandle<io::Result<u64>>
+async fn read_direct_pipe<R>(pipe: Option<R>, capture_output: bool) -> io::Result<Vec<u8>>
 where
-    R: Read + Send + 'static,
+    R: tokio::io::AsyncRead + Unpin,
 {
-    std::thread::spawn(move || io::copy(&mut pipe, &mut io::sink()))
-}
+    use tokio::io::AsyncReadExt;
 
-fn wait_without_output(mut child: std::process::Child) -> io::Result<std::process::ExitStatus> {
-    let drainers = [
-        child.stdout.take().map(drain_pipe),
-        child.stderr.take().map(drain_pipe),
-    ];
-    let status = child.wait();
-    if status.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-
-    let mut drain_error = None;
-    for drainer in drainers.into_iter().flatten() {
-        let result = drainer
-            .join()
-            .map_err(|_| io::Error::other("e9patch stdio drainer panicked"))
-            .and_then(|result| result.map(|_| ()));
-        if let Err(error) = result {
-            drain_error.get_or_insert(error);
+    let mut output = Vec::new();
+    if let Some(mut pipe) = pipe {
+        if capture_output {
+            pipe.read_to_end(&mut output).await?;
+        } else {
+            tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await?;
         }
     }
+    Ok(output)
+}
+
+/// Keep the actual child and both pipe owners until its original wait and
+/// drains finish. A coordinator failure requests termination through this
+/// owner; dropping a blocking JoinHandle is not child cleanup.
+async fn wait_direct_child(
+    mut child: tokio::process::Child,
+    capture_output: bool,
+    mut cancelled: tokio::sync::oneshot::Receiver<()>,
+) -> io::Result<ChildWait> {
+    drop(child.stdin.take());
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let wait = async {
+        tokio::select! {
+            status = child.wait() => {
+                if status.is_err() {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                }
+                status
+            }
+            _ = &mut cancelled => {
+                let killed = child.start_kill();
+                // Poll the same owned Child to a real wait result even if
+                // signalling failed or it exited concurrently.
+                let status = child.wait().await;
+                killed.and(status)
+            }
+        }
+    };
+    // Do not short-circuit a wait/drain when another pipe reports an error.
+    let (status, stdout, stderr) = tokio::join!(
+        wait,
+        read_direct_pipe(stdout, capture_output),
+        read_direct_pipe(stderr, capture_output),
+    );
     let status = status?;
-    if let Some(error) = drain_error {
-        return Err(error);
+    let stdout = stdout?;
+    let stderr = stderr?;
+    if capture_output {
+        Ok(ChildWait::Output(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        }))
+    } else {
+        Ok(ChildWait::Status(status))
     }
-    Ok(status)
 }
 
 fn tool_preload_path_from(value: Option<OsString>) -> io::Result<PathBuf> {
@@ -987,10 +1080,12 @@ async fn launch_direct<T>(
     preload: PathBuf,
     capture_output: bool,
     tool_data: Option<Vec<u8>>,
+    unsupported_syscalls: UnsupportedSyscallPolicy,
 ) -> Result<(ChildWait, T::GlobalState), Error>
 where
     T: Tool + 'static,
 {
+    configure_unsupported_syscall_policy(&mut command, unsupported_syscalls);
     if !preload.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -1059,9 +1154,10 @@ where
 
     let wait = match tool_data {
         // Sealed-memfd bootstrap path. Mirroring reverie-liteinst's memfd branch,
-        // this stays a single-process std spawn: the bootstrap fd is handed to the
+        // this stays a single-process spawn: the bootstrap fd is handed to the
         // guest via a `pre_exec` `F_SETFD` clear, expressed against
-        // `std::process::Command`. This path is not yet tree-reaped.
+        // `std::process::Command`. The async child owner kills and reaps this
+        // same process on coordinator failure; this is not a process-tree lane.
         Some(tool_data) => {
             let mut child_command = command.try_into_std()?;
             let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
@@ -1077,7 +1173,10 @@ where
                     Ok(())
                 });
             }
-            let child = match child_command.spawn() {
+            let child = match tokio::process::Command::from(child_command)
+                .kill_on_drop(true)
+                .spawn()
+            {
                 Ok(child) => child,
                 Err(error) => {
                     let _ = executable.close();
@@ -1085,17 +1184,14 @@ where
                 }
             };
             drop(bootstrap);
-            let wait = tokio::task::spawn_blocking(move || {
-                if capture_output {
-                    child.wait_with_output().map(ChildWait::Output)
-                } else {
-                    wait_without_output(child).map(ChildWait::Status)
-                }
-            });
-            serve_rpc_until(server, async move {
-                wait.await
-                    .map_err(|error| io::Error::other(error.to_string()))?
-            })
+            let (cancel, cancelled) = tokio::sync::oneshot::channel();
+            serve_rpc_until(
+                server,
+                wait_direct_child(child, capture_output, cancelled),
+                move |_| {
+                    let _ = cancel.send(());
+                },
+            )
             .await?
         }
         // Environment-bootstrap path (the default `run_direct` / output flows).
@@ -1116,30 +1212,42 @@ where
                     return Err(error);
                 }
             };
-            serve_rpc_until(server, async move {
-                if capture_output {
-                    let (output, ()) = tracer
-                        .wait_with_output()
-                        .await
-                        .map_err(|error| io::Error::other(error.to_string()))?;
-                    Ok(ChildWait::Output(std::process::Output {
-                        status: output.status.into(),
-                        stdout: output.stdout,
-                        stderr: output.stderr,
-                    }))
-                } else {
-                    // `wait_discarding_output`, not the bare `wait`: this arm is
-                    // reached with the caller's stdio possibly piped, and
-                    // `run_direct_with_preload` documents that such pipes are
-                    // drained concurrently and discarded. A bare `wait` leaves
-                    // them unread and a noisy guest deadlocks on a full pipe.
-                    let (status, ()) = tracer
-                        .wait_discarding_output()
-                        .await
-                        .map_err(|error| io::Error::other(error.to_string()))?;
-                    Ok(ChildWait::Status(status.into()))
-                }
-            })
+            // This is the ordinary unit-tool lifecycle owner, not an
+            // experimental instrumentation route. Continue its original wait
+            // after requesting termination, as the core handle requires.
+            let termination = tracer
+                .termination_handle()
+                .expect("ordinary unit-tool tracer supports termination");
+            serve_rpc_until(
+                server,
+                async move {
+                    if capture_output {
+                        let (output, ()) = tracer
+                            .wait_with_output()
+                            .await
+                            .map_err(|error| io::Error::other(error.to_string()))?;
+                        Ok(ChildWait::Output(std::process::Output {
+                            status: output.status.into(),
+                            stdout: output.stdout,
+                            stderr: output.stderr,
+                        }))
+                    } else {
+                        // `wait_discarding_output`, not the bare `wait`: this arm is
+                        // reached with the caller's stdio possibly piped, and
+                        // `run_direct_with_preload` documents that such pipes are
+                        // drained concurrently and discarded. A bare `wait` leaves
+                        // them unread and a noisy guest deadlocks on a full pipe.
+                        let (status, ()) = tracer
+                            .wait_discarding_output()
+                            .await
+                            .map_err(|error| io::Error::other(error.to_string()))?;
+                        Ok(ChildWait::Status(status.into()))
+                    }
+                },
+                move |error| {
+                    termination.terminate(io::Error::new(error.kind(), error.to_string()).into());
+                },
+            )
             .await?
         }
     };
@@ -1155,41 +1263,73 @@ where
     Ok((wait, global))
 }
 
-async fn serve_rpc_until<G, F, T>(server: RpcServer<G>, completion: F) -> io::Result<T>
+async fn serve_rpc_until<G, F, T, C>(
+    server: RpcServer<G>,
+    completion: F,
+    on_failure: C,
+) -> io::Result<T>
 where
     G: GlobalTool + 'static,
     F: Future<Output = io::Result<T>>,
+    C: FnOnce(&io::Error),
 {
-    let mut serving = tokio::task::JoinSet::new();
-    serving.spawn(server.serve());
+    let (shutdown, stopped) = tokio::sync::oneshot::channel();
+    serve_until(
+        async move {
+            server
+                .serve_until(async {
+                    let _ = stopped.await;
+                })
+                .await
+                .map_err(|error| io::Error::other(error.to_string()))
+        },
+        completion,
+        on_failure,
+        move || {
+            let _ = shutdown.send(());
+        },
+    )
+    .await
+}
+
+async fn serve_until<S, F, T, C, D>(
+    server: S,
+    completion: F,
+    on_failure: C,
+    on_completion: D,
+) -> io::Result<T>
+where
+    S: Future<Output = io::Result<()>>,
+    F: Future<Output = io::Result<T>>,
+    C: FnOnce(&io::Error),
+    D: FnOnce(),
+{
+    tokio::pin!(server);
     tokio::pin!(completion);
 
-    let result = tokio::select! {
+    tokio::select! {
         biased;
-        result = &mut completion => result,
-        result = serving.join_next() => {
-            let message = match result {
-                Some(Ok(Ok(()))) => "e9patch coordinator stopped unexpectedly".to_owned(),
-                Some(Ok(Err(error))) => error.to_string(),
-                Some(Err(error)) => error.to_string(),
-                None => "e9patch coordinator task disappeared".to_owned(),
-            };
-            return Err(io::Error::other(message));
-        }
-    };
-
-    serving.abort_all();
-    while let Some(server_result) = serving.join_next().await {
-        match server_result {
-            Err(error) if error.is_cancelled() => {}
-            Ok(Ok(())) => {
-                return Err(io::Error::other("e9patch coordinator stopped unexpectedly"));
+        result = &mut completion => {
+            on_completion();
+            // RpcServer's cooperative owner cancels and JOINS all connection
+            // tasks. Aborting only its outer future does not join them.
+            let stopped = server.await;
+            match result {
+                Err(first) => Err(first),
+                Ok(value) => stopped.map(|()| value),
             }
-            Ok(Err(error)) => return Err(io::Error::other(error.to_string())),
-            Err(error) => return Err(io::Error::other(error.to_string())),
+        }
+        result = &mut server => {
+            let error = result.err().unwrap_or_else(||
+                io::Error::other("e9patch coordinator stopped unexpectedly"));
+            on_failure(&error);
+            // The original child/tracer completion still owns termination,
+            // reaping and pipe drains. Do not unwind the temporary executable
+            // and socket while that owner is still running.
+            let _ = completion.await;
+            Err(error)
         }
     }
-    result
 }
 
 async fn unwrap_global_after_connections<G>(mut global: Arc<G>) -> io::Result<G> {
@@ -1265,6 +1405,55 @@ mod tests {
     use std::os::fd::FromRawFd;
 
     use super::*;
+
+    #[test]
+    fn direct_api_policy_overrides_ambient_unsupported_errno_selection() {
+        const CHILD_ENV: &str = "REVERIE_E9PATCH_POLICY_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            assert_eq!(
+                std::env::var(crate::runtime::UNSUPPORTED_SYSCALL_POLICY_ENV).unwrap(),
+                "1"
+            );
+            let mut command = Command::new("/bin/true");
+            configure_unsupported_syscall_policy(&mut command, UnsupportedSyscallPolicy::default());
+            assert_eq!(
+                command
+                    .get_env(crate::runtime::UNSUPPORTED_SYSCALL_POLICY_ENV)
+                    .as_deref(),
+                Some(OsStr::new("0"))
+            );
+            command.env(crate::runtime::UNSUPPORTED_SYSCALL_POLICY_ENV, "1");
+            configure_unsupported_syscall_policy(&mut command, UnsupportedSyscallPolicy::Refuse);
+            assert_eq!(
+                command
+                    .get_env(crate::runtime::UNSUPPORTED_SYSCALL_POLICY_ENV)
+                    .as_deref(),
+                Some(OsStr::new("0"))
+            );
+            configure_unsupported_syscall_policy(
+                &mut command,
+                UnsupportedSyscallPolicy::WarnAndReturnErrno,
+            );
+            assert_eq!(
+                command
+                    .get_env(crate::runtime::UNSUPPORTED_SYSCALL_POLICY_ENV)
+                    .as_deref(),
+                Some(OsStr::new("1"))
+            );
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backend::tests::direct_api_policy_overrides_ambient_unsupported_errno_selection",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env(crate::runtime::UNSUPPORTED_SYSCALL_POLICY_ENV, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
 
     struct ReplacementOracle {
         path: PathBuf,
@@ -2188,8 +2377,8 @@ mod tests {
         assert!(status.success());
     }
 
-    #[test]
-    fn status_wait_drains_piped_output_without_deadlock() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn status_wait_drains_piped_output_without_deadlock() {
         const CHILD_ENV: &str = "REVERIE_E9PATCH_STATUS_DRAIN_CHILD";
         if std::env::var_os(CHILD_ENV).is_some() {
             let chunk = [b'x'; 16 * 1024];
@@ -2200,7 +2389,7 @@ mod tests {
             return;
         }
 
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
+        let child = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "backend::tests::status_wait_drains_piped_output_without_deadlock",
@@ -2209,23 +2398,119 @@ mod tests {
             .env(CHILD_ENV, "1")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .unwrap();
-        let pid = child.id();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            sender.send(wait_without_output(child)).unwrap();
-        });
-        let result = match receiver.recv_timeout(std::time::Duration::from_secs(10)) {
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        let wait = wait_direct_child(child, false, cancelled);
+        tokio::pin!(wait);
+        let result = match tokio::time::timeout(std::time::Duration::from_secs(10), &mut wait).await
+        {
             Ok(result) => result,
             Err(error) => {
-                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-                let _ = waiter.join();
+                let _ = cancel.send(());
+                let _ = wait.await;
                 panic!("status wait did not drain piped output before timeout: {error}");
             }
         };
-        waiter.join().unwrap();
-        assert!(result.unwrap().success());
+        match result.unwrap() {
+            ChildWait::Status(status) => assert!(status.success()),
+            ChildWait::Output(_) => panic!("status-only wait returned captured output"),
+        }
+    }
+
+    async fn assert_coordinator_failure_reaps_direct_child(capture_output: bool) {
+        use std::os::unix::process::ExitStatusExt;
+
+        let child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "printf ready; printf ready >&2; exec sleep 30"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let completed = Arc::new(AtomicBool::new(false));
+        let completion_observed = completed.clone();
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        let completion = async move {
+            let result = wait_direct_child(child, capture_output, cancelled).await?;
+            let status = match result {
+                ChildWait::Status(status) => status,
+                ChildWait::Output(output) => output.status,
+            };
+            assert_eq!(status.signal(), Some(libc::SIGKILL));
+            completion_observed.store(true, Ordering::Release);
+            Ok(())
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            serve_until(
+                async { Err(io::Error::other("injected coordinator failure")) },
+                completion,
+                move |_| {
+                    let _ = cancel.send(());
+                },
+                || {},
+            ),
+        )
+        .await
+        .expect("coordinator failure must finish actual child cleanup within the bound");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "injected coordinator failure"
+        );
+        assert!(
+            completed.load(Ordering::Acquire),
+            "original child waiter did not finish"
+        );
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD),
+            "child must already be reaped, not merely signalled"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn coordinator_failure_reaps_captured_direct_child_before_return() {
+        assert_coordinator_failure_reaps_direct_child(true).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn coordinator_failure_reaps_status_only_direct_child_before_return() {
+        assert_coordinator_failure_reaps_direct_child(false).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn child_completion_awaits_cooperative_coordinator_shutdown() {
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let joined = Arc::new(AtomicBool::new(false));
+        let observed = joined.clone();
+        let result = serve_until(
+            async move {
+                stopped.await.unwrap();
+                tokio::task::yield_now().await;
+                observed.store(true, Ordering::Release);
+                Ok(())
+            },
+            async { Ok(42) },
+            |_| panic!("coordinator must be stopped only by the completion owner"),
+            move || {
+                let _ = shutdown.send(());
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, 42);
+        assert!(
+            joined.load(Ordering::Acquire),
+            "cooperative serving owner was not joined"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

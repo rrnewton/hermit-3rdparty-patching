@@ -33,7 +33,7 @@ reverie-ptrace = { version = "0.5.4", git = "https://github.com/rrnewton/reverie
 reverie-rpc-transport = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b08d7f562e770990033a3af8366618e0870f1bb6" }
 sha2 = "0.10.9"
 tempfile = "3.26.0"
-tokio = { version = "1.52.4", features = ["net", "rt", "time"] }
+tokio = { version = "1.52.4", features = ["io-util", "net", "process", "rt", "sync", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1.52.4", features = ["macros", "rt"] }

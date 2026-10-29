@@ -35,12 +35,24 @@ pub async fn run_e9patch_noop_with_preload(
     command: reverie::process::Command,
     preload: impl Into<std::path::PathBuf>,
 ) -> Result<(reverie::process::Output, ()), reverie::Error> {
-    reverie_e9patch::E9patchBackend::run_direct_with_output_and_preload_data::<noop::NoopTool>(
+    run_e9patch_noop_with_preload_and_policy(
         command,
-        (),
         preload,
-        b"noop",
+        reverie_e9patch::UnsupportedSyscallPolicy::Refuse,
     )
+    .await
+}
+
+/// Noop with an explicit caller unsupported-syscall policy; the default API
+/// above always refuses unsupported operations, regardless of environment.
+pub async fn run_e9patch_noop_with_preload_and_policy(
+    command: reverie::process::Command,
+    preload: impl Into<std::path::PathBuf>,
+    policy: reverie_e9patch::UnsupportedSyscallPolicy,
+) -> Result<(reverie::process::Output, ()), reverie::Error> {
+    reverie_e9patch::E9patchBackend::run_direct_with_output_and_preload_data_with_policy::<
+        noop::NoopTool,
+    >(command, (), preload, b"noop", policy)
     .await
 }
 
@@ -97,16 +109,31 @@ pub async fn run_e9patch_write_strace_with_preload(
     command: reverie::process::Command,
     preload: impl Into<std::path::PathBuf>,
 ) -> Result<reverie::process::Output, reverie::Error> {
+    run_e9patch_write_strace_with_preload_and_policy(
+        command,
+        preload,
+        reverie_e9patch::UnsupportedSyscallPolicy::Refuse,
+    )
+    .await
+}
+
+/// The same write-filtered Strace Tool with an explicit caller policy.
+pub async fn run_e9patch_write_strace_with_preload_and_policy(
+    command: reverie::process::Command,
+    preload: impl Into<std::path::PathBuf>,
+    policy: reverie_e9patch::UnsupportedSyscallPolicy,
+) -> Result<reverie::process::Output, reverie::Error> {
     let config = strace::Config {
         filters: vec![strace::Filter {
             inverse: false,
             syscalls: vec![reverie::syscalls::Sysno::write],
         }],
     };
-    let (output, _) = reverie_e9patch::E9patchBackend::run_direct_with_output_and_preload_data::<
-        strace::Strace,
-    >(command, config, preload, b"strace")
-    .await?;
+    let (output, _) =
+        reverie_e9patch::E9patchBackend::run_direct_with_output_and_preload_data_with_policy::<
+            strace::Strace,
+        >(command, config, preload, b"strace", policy)
+        .await?;
     Ok(output)
 }
 

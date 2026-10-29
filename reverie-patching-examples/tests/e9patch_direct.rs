@@ -7,11 +7,18 @@ use reverie::process::Command;
 use reverie::process::Stdio;
 use reverie_e9patch::E9patchBackend;
 use reverie_e9patch::TOOL_PRELOAD_ENV;
+use reverie_e9patch::UnsupportedSyscallPolicy;
 use reverie_patching_examples::e9patch_smoke::AotCounterTool;
 use reverie_patching_examples::run_e9patch_counter1_with_preload;
 use reverie_patching_examples::run_e9patch_counter2_with_preload;
 use reverie_patching_examples::run_e9patch_noop_with_preload;
+use reverie_patching_examples::run_e9patch_noop_with_preload_and_policy;
 use reverie_patching_examples::run_e9patch_write_strace_with_preload;
+use reverie_patching_examples::run_e9patch_write_strace_with_preload_and_policy;
+
+// Deliberately plant the private child transport in default-policy controls:
+// the owning launch API must overwrite even an inherited/caller-set 1.
+const AMBIENT_UNSUPPORTED_POLICY: &str = "REVERIE_E9PATCH_ALLOW_UNSUPPORTED_SYSCALLS";
 
 fn compile_guest() -> (tempfile::TempDir, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
@@ -170,17 +177,49 @@ async fn guest_process_creation_fails_closed_under_direct_host() {
     // replacement are rejected by `injected_syscall_guard`. This proves the
     // single-process direct AOT boundary is sound: a guest cannot `clone`/`fork`
     // or `execve` away from the tool. The fixture asserts each rewritten site
-    // returns `-EOPNOTSUPP` and exits 0; a spawned untooled child or a real
-    // exec would change the exit code, stdout, or stderr.
+    // returns `-EOPNOTSUPP` and exits 0 under the explicit compatibility
+    // policy; a spawned untooled child or a real exec changes the exit code,
+    // stdout, or the exact named refusal diagnostics below.
     let (_directory, guest) = compile_guest();
     let mut command = Command::new(guest);
     command.env("REVERIE_E9PATCH_EXPECT_PROCESS_CREATION_FAILS_CLOSED", "1");
+    let (output, ()) = run_e9patch_noop_with_preload_and_policy(
+        command,
+        example_preload(),
+        UnsupportedSyscallPolicy::WarnAndReturnErrno,
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stderr,
+        concat!(
+            "E9PATCH_UNSUPPORTED_SYSCALL: clone: unsupported by the direct Tool host\n",
+            "E9PATCH_UNSUPPORTED_SYSCALL: execve: unsupported by the direct Tool host\n",
+        )
+        .as_bytes(),
+        "{output:?}",
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a built e9tool/e9patch pair"]
+async fn guest_process_creation_refuses_the_run_by_default() {
+    let (_directory, guest) = compile_guest();
+    let mut command = Command::new(guest);
+    command
+        .env("REVERIE_E9PATCH_EXPECT_PROCESS_CREATION_FAILS_CLOSED", "1")
+        .env(AMBIENT_UNSUPPORTED_POLICY, "1");
     let (output, ()) = run_e9patch_noop_with_preload(command, example_preload())
         .await
         .unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert_eq!(output.status, ExitStatus::Exited(126), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stderr, b"E9PATCH_UNSUPPORTED_SYSCALL: clone: unsupported by the direct Tool host\n",
+        "{output:?}",
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -297,13 +336,21 @@ async fn subscribed_residual_write_still_fails_closed_after_direct_start() {
     let (_directory, guest) = compile_guest();
     let mut command = Command::new(guest);
     command.env("REVERIE_E9PATCH_EXPECT_RESIDUAL_WRITE_FAIL", "1");
-    let output = run_e9patch_write_strace_with_preload(command, example_preload())
-        .await
-        .unwrap();
+    let output = run_e9patch_write_strace_with_preload_and_policy(
+        command,
+        example_preload(),
+        UnsupportedSyscallPolicy::WarnAndReturnErrno,
+    )
+    .await
+    .unwrap();
     assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(!stderr.contains("write("), "{stderr}");
+    assert_eq!(
+        stderr,
+        "E9PATCH_UNSUPPORTED_SYSCALL: write: unsupported by the direct Tool host\n"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -312,13 +359,50 @@ async fn subscribed_application_residual_fails_closed_before_direct_start() {
     let (_directory, guest) = compile_guest();
     let mut command = Command::new(guest);
     command.env("REVERIE_E9PATCH_EXPECT_PRESTART_RESIDUAL_FAIL", "1");
-    let output = run_e9patch_write_strace_with_preload(command, example_preload())
-        .await
-        .unwrap();
+    let output = run_e9patch_write_strace_with_preload_and_policy(
+        command,
+        example_preload(),
+        UnsupportedSyscallPolicy::WarnAndReturnErrno,
+    )
+    .await
+    .unwrap();
     assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(!stderr.contains("write("), "{stderr}");
+    assert_eq!(
+        stderr,
+        "E9PATCH_UNSUPPORTED_SYSCALL: write: unsupported by the direct Tool host\n"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a built e9tool/e9patch pair"]
+async fn subscribed_residual_write_refuses_the_run_by_default() {
+    assert_default_residual_refusal("REVERIE_E9PATCH_EXPECT_RESIDUAL_WRITE_FAIL").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a built e9tool/e9patch pair"]
+async fn subscribed_prestart_residual_refuses_the_run_by_default() {
+    assert_default_residual_refusal("REVERIE_E9PATCH_EXPECT_PRESTART_RESIDUAL_FAIL").await;
+}
+
+async fn assert_default_residual_refusal(fixture: &str) {
+    let (_directory, guest) = compile_guest();
+    let mut command = Command::new(guest);
+    command
+        .env(fixture, "1")
+        .env(AMBIENT_UNSUPPORTED_POLICY, "1");
+    let output = run_e9patch_write_strace_with_preload(command, example_preload())
+        .await
+        .unwrap();
+    assert_eq!(output.status, ExitStatus::Exited(126), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(
+        output.stderr, b"E9PATCH_UNSUPPORTED_SYSCALL: write: unsupported by the direct Tool host\n",
+        "{output:?}",
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

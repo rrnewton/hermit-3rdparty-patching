@@ -111,6 +111,9 @@ unsafe fn install_tool_inner<T>(
 where
     T: Tool + 'static,
 {
+    let allow_unsupported_syscalls = crate::runtime::allow_unsupported_syscalls_from_env_value(
+        std::env::var_os(crate::runtime::UNSUPPORTED_SYSCALL_POLICY_ENV).as_deref(),
+    )?;
     if TOOL_INSTALLED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -138,6 +141,7 @@ where
         root_pid: pid,
         subscriptions,
         startup_runtime_text,
+        allow_unsupported_syscalls,
         direct_dispatch_started: AtomicBool::new(false),
         states: SpinMutex::new(HashMap::new()),
     };
@@ -158,6 +162,7 @@ struct ToolHost<T: Tool> {
     root_pid: Pid,
     subscriptions: HashSet<Sysno>,
     startup_runtime_text: [ExecutableRange; 2],
+    allow_unsupported_syscalls: bool,
     direct_dispatch_started: AtomicBool,
     states: SpinMutex<HashMap<i32, T::ThreadState>>,
 }
@@ -232,7 +237,7 @@ where
         if aot::dispatch_is_nested()
             || (aot::dispatch_is_active() && event.source() == SyscallEventSource::SignalTrap)
         {
-            forward_nested_tool_syscall(event, self.rpc.raw_fd());
+            forward_nested_tool_syscall(event, self.rpc.raw_fd(), self.allow_unsupported_syscalls);
             return;
         }
 
@@ -258,8 +263,15 @@ where
                     .iter()
                     .any(|range| range.contains(event.instruction_pointer())),
             ) {
-                event.fail(libc::EOPNOTSUPP);
+                let error = unsupported_syscall(
+                    event.number(),
+                    Errno::EOPNOTSUPP,
+                    self.allow_unsupported_syscalls,
+                );
+                event.fail(error.into_raw());
             } else if let Some(error) = injected_syscall_guard(event.number(), event.args()) {
+                let error =
+                    unsupported_syscall(event.number(), error, self.allow_unsupported_syscalls);
                 event.fail(error.into_raw());
             } else {
                 // Before the first direct event, only the injected e9patch
@@ -293,6 +305,7 @@ where
                 state,
                 rpc: &self.rpc,
                 tail: &tail,
+                allow_unsupported_syscalls: self.allow_unsupported_syscalls,
                 injected_syscalls: 0,
             };
 
@@ -313,7 +326,12 @@ where
                 .ok()
                 .and_then(Sysno::new)
             else {
-                guest.event.fail(libc::ENOSYS);
+                let error = unsupported_syscall(
+                    guest.event.number(),
+                    Errno::ENOSYS,
+                    guest.allow_unsupported_syscalls,
+                );
+                guest.event.fail(error.into_raw());
                 return;
             };
             if !self.subscriptions.contains(&number) {
@@ -323,6 +341,11 @@ where
                     Some((raw_number, args))
                 } else {
                     if let Some(error) = injected_syscall_guard(raw_number, args) {
+                        let error = unsupported_syscall(
+                            raw_number,
+                            error,
+                            guest.allow_unsupported_syscalls,
+                        );
                         guest.event.fail(error.into_raw());
                         return;
                     }
@@ -430,6 +453,7 @@ struct E9patchGuest<'a, T: Tool> {
     state: &'a mut T::ThreadState,
     rpc: &'a CoordinatorRpc<T::GlobalState>,
     tail: &'a TailResult,
+    allow_unsupported_syscalls: bool,
     /// Injections made through this guest ([`Guest::injected_syscalls`]).
     injected_syscalls: u64,
 }
@@ -543,7 +567,11 @@ impl<T: Tool> Guest<T> for E9patchGuest<'_, T> {
             args.arg5 as u64,
         ];
         if let Some(error) = injected_syscall_guard(number, raw_args) {
-            return Err(error);
+            return Err(unsupported_syscall(
+                number,
+                error,
+                self.allow_unsupported_syscalls,
+            ));
         }
         if is_exit_syscall(number) {
             self.tail.set_exit(number, raw_args);
@@ -565,6 +593,7 @@ impl<T: Tool> Guest<T> for E9patchGuest<'_, T> {
         ];
         let number = number.id() as i64;
         if let Some(error) = injected_syscall_guard(number, args) {
+            let error = unsupported_syscall(number, error, self.allow_unsupported_syscalls);
             self.tail.set_result(-i64::from(error.into_raw()));
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
@@ -627,7 +656,11 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
 
 // TODO-HUMAN-REVIEW(PR-269): Review nested Tool syscall
 // guards and trusted-gate forwarding.
-fn forward_nested_tool_syscall(event: &mut SyscallEvent, coordinator_fd: libc::c_int) {
+fn forward_nested_tool_syscall(
+    event: &mut SyscallEvent,
+    coordinator_fd: libc::c_int,
+    allow_unsupported_syscalls: bool,
+) {
     let number = event.number();
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -648,9 +681,11 @@ fn forward_nested_tool_syscall(event: &mut SyscallEvent, coordinator_fd: libc::c
                 | libc::SYS_epoll_pwait2
         );
     if unsupported_process {
-        event.fail(libc::ENOTSUP);
+        let error = unsupported_syscall(number, Errno::EOPNOTSUPP, allow_unsupported_syscalls);
+        event.fail(error.into_raw());
     } else if unsupported_signal_state {
-        event.fail(libc::EPERM);
+        let error = unsupported_syscall(number, Errno::EPERM, allow_unsupported_syscalls);
+        event.fail(error.into_raw());
     } else if !protect_coordinator_channel(event, coordinator_fd, false) {
         event.forward();
     }
@@ -909,6 +944,69 @@ impl Stack for LocalStack {
     }
 }
 
+/// The same named refusal is emitted for default termination and explicitly
+/// opted-in errno continuation. This can run in a SIGSYS/nested dispatch, so
+/// use only a fixed stack buffer and the trusted raw write/exit gates.
+fn unsupported_syscall(number: i64, error: Errno, allow: bool) -> Errno {
+    let mut digits = [0_u8; 20];
+    let mut start = digits.len();
+    let mut magnitude = number.unsigned_abs();
+    loop {
+        start -= 1;
+        digits[start] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    if number < 0 {
+        start -= 1;
+        digits[start] = b'-';
+    }
+    let name = usize::try_from(number)
+        .ok()
+        .and_then(Sysno::new)
+        .map_or(&digits[start..], |sysno| sysno.name().as_bytes());
+    let prefix = b"E9PATCH_UNSUPPORTED_SYSCALL: ";
+    let suffix = b": unsupported by the direct Tool host\n";
+    let mut message = [0_u8; 256];
+    let len = prefix.len() + name.len() + suffix.len();
+    if len > message.len() {
+        fatal(126);
+    }
+    message[..prefix.len()].copy_from_slice(prefix);
+    message[prefix.len()..prefix.len() + name.len()].copy_from_slice(name);
+    message[prefix.len() + name.len()..len].copy_from_slice(suffix);
+    let mut remaining = &message[..len];
+    while !remaining.is_empty() {
+        let written = unsafe {
+            raw_syscall6(
+                libc::SYS_write,
+                [
+                    libc::STDERR_FILENO as u64,
+                    remaining.as_ptr() as u64,
+                    remaining.len() as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if written == -i64::from(libc::EINTR) {
+            continue;
+        }
+        if written <= 0 || written as usize > remaining.len() {
+            // A compatibility run may not silently lose its refusal either.
+            fatal(126);
+        }
+        remaining = &remaining[written as usize..];
+    }
+    if !allow {
+        fatal(126);
+    }
+    error
+}
+
 fn tool_fatal(status: i32, error: &Error) -> ! {
     let message = format!("reverie-e9patch tool error: {error:?}\n");
     unsafe {
@@ -939,6 +1037,37 @@ fn fatal(status: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_syscall_default_refuses_and_opt_in_keeps_named_errno() {
+        const CHILD_ENV: &str = "REVERIE_E9PATCH_REFUSAL_TEST_CHILD";
+        if let Some(policy) = std::env::var_os(CHILD_ENV) {
+            let allow =
+                crate::runtime::allow_unsupported_syscalls_from_env_value(Some(&policy)).unwrap();
+            assert_eq!(
+                unsupported_syscall(libc::SYS_clone, Errno::EOPNOTSUPP, allow),
+                Errno::EOPNOTSUPP,
+            );
+            return;
+        }
+        for (policy, expected_code) in [("0", 126), ("1", 0)] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tool_host::tests::unsupported_syscall_default_refuses_and_opt_in_keeps_named_errno",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, policy)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(expected_code), "{output:?}");
+            assert_eq!(
+                output.stderr,
+                b"E9PATCH_UNSUPPORTED_SYSCALL: clone: unsupported by the direct Tool host\n",
+                "{output:?}",
+            );
+        }
+    }
 
     #[test]
     fn direct_host_rejects_process_tree_injection() {

@@ -123,6 +123,27 @@ pub fn builtin_tool_from_env_value(value: &OsStr) -> Option<BuiltinTool> {
 // TODO-HUMAN-REVIEW(PR-250): Review launcher-selected shared RuntimeConfig alt-stack knob.
 pub const ALT_STACK_ENV: &str = "REVERIE_E9PATCH_ALT_STACK";
 
+// Private child transport. launch_direct always overwrites it from the
+// caller's typed UnsupportedSyscallPolicy, including an explicit 0 for every
+// default API. Ambient environment values are not a compatibility opt-in.
+pub(crate) const UNSUPPORTED_SYSCALL_POLICY_ENV: &str =
+    "REVERIE_E9PATCH_ALLOW_UNSUPPORTED_SYSCALLS";
+
+/// Parse the explicit unsupported-syscall compatibility policy without
+/// changing process-global state. Reject misspellings rather than silently
+/// enabling errno continuation.
+pub(crate) fn allow_unsupported_syscalls_from_env_value(value: Option<&OsStr>) -> io::Result<bool> {
+    match value {
+        None => Ok(false),
+        Some(value) if value == OsStr::new("0") => Ok(false),
+        Some(value) if value == OsStr::new("1") => Ok(true),
+        Some(value) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{UNSUPPORTED_SYSCALL_POLICY_ENV} must be 0 or 1, got {value:?}"),
+        )),
+    }
+}
+
 /// Parse an [`ALT_STACK_ENV`] value into the `use_alt_stack` boolean.
 ///
 /// `None` (unset) yields the shared default. Accepts `1`/`0`, `true`/`false`,
@@ -370,6 +391,21 @@ pub unsafe fn initialize_from_environment() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_syscall_compatibility_requires_explicit_opt_in() {
+        assert!(!allow_unsupported_syscalls_from_env_value(None).unwrap());
+        assert!(!allow_unsupported_syscalls_from_env_value(Some(OsStr::new("0"))).unwrap());
+        assert!(allow_unsupported_syscalls_from_env_value(Some(OsStr::new("1"))).unwrap());
+        for value in ["", "true", "yes", " 1", "2"] {
+            assert_eq!(
+                allow_unsupported_syscalls_from_env_value(Some(OsStr::new(value)))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput,
+            );
+        }
+    }
 
     #[test]
     fn inert_without_env() {
