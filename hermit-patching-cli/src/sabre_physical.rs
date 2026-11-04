@@ -281,6 +281,7 @@ async fn run_with_sender(
     .map_err(|error| anyhow!("failed to start SaBRe coordinator RPC: {error}"))?;
     let server_task = tokio::spawn(async move { server.serve().await });
 
+    let mut stats_after_run = None;
     let supervised_result = async {
         // SaBRe runs with the guest's own argv and environment, so the kernel
         // builds the guest's initial stack, /proc/self/cmdline and
@@ -374,6 +375,7 @@ async fn run_with_sender(
         let stats = reverie_sabre_stats::SabreStats::create(reverie::BackendStatsRequest::ENABLED)
             .map_err(|error| anyhow!("failed to create the SaBRe statistics page: {error}"))?
             .expect("an enabled request creates the statistics page");
+        stats_after_run = Some(stats.clone());
         setting(
             reverie_sabre_stats::BACKEND_STATS_ENV,
             OsStr::new(&stats.raw_fd().to_string()),
@@ -513,12 +515,14 @@ async fn run_with_sender(
     if requires_forced_shutdown {
         global.cancel_internal_scheduler().await;
     }
-    let dispatch_stats = hermit::backend_stats::report_with_names(
-        "sabre",
-        "sabre",
-        hermit::backend_stats::request(print_summary_to_json_file),
-        &stats,
-    );
+    let dispatch_stats = stats_after_run.as_ref().and_then(|stats| {
+        hermit::backend_stats::report_with_names(
+            "sabre",
+            "sabre",
+            hermit::backend_stats::request(print_summary_to_json_file),
+            stats,
+        )
+    });
     // SaBRe's plugin starts after the guest's dynamic loader, whose syscalls
     // the histogram therefore misses.
     global.note_syscall_observation_gap(detcore::SyscallObservationGap::InProcessRuntimeStart);
