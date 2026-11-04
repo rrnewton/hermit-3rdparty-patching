@@ -19,19 +19,19 @@ path = "src/main.rs"
 anyhow = "1.0.75"
 clap = { version = "4.6.2", features = ["derive", "env"] }
 libc = "0.2.139"
-nostd-print = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
-reverie = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944", package = "reverie-core" }
+nostd-print = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
+reverie = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832", package = "reverie-core" }
 # The source-ready Tool-only API is staged against this source baseline; the
 # final core commit must be pinned before this extension is build-ready.
-reverie-examples = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944", default-features = false }
+reverie-examples = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832", default-features = false }
 reverie-host = { version = "0.5.4", path = "../reverie-host" }
-reverie-kvm = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
-reverie-ptrace = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
-reverie-process = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
-reverie-rpc-transport = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+reverie-kvm = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
+reverie-ptrace = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
+reverie-process = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
+reverie-rpc-transport = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
 reverie-sabre = { version = "0.5.4", path = "../reverie-sabre" }
-reverie-syscalls = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
-reverie-util = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+reverie-syscalls = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
+reverie-util = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
 serde = { version = "1.0.188", features = ["derive"] }
 serde_json = "1.0.140"
 syscalls = { version = "0.6.7", features = ["serde"] }

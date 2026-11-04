@@ -26,12 +26,12 @@ path = "src/bin/counter2.rs"
 anyhow = "1.0.103"
 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 libc = "0.2.186"
-reverie = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944", package = "reverie-core" }
+reverie = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832", package = "reverie-core" }
 reverie-e9patch = { version = "0.5.4", path = "../reverie-e9patch", default-features = false }
-reverie-examples = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944", default-features = false, features = ["host"] }
-reverie-liteinst = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944", default-features = false }
+reverie-examples = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832", default-features = false, features = ["host"] }
+reverie-liteinst = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832", default-features = false }
 reverie-host = { version = "0.5.4", path = "../experimental/reverie-host" }
-reverie-util = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+reverie-util = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]

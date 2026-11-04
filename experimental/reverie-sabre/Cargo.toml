@@ -16,16 +16,16 @@ heapless = "0.8.0"
 lazy_static = "1.4"
 libc = "0.2.139"
 mimalloc = { version = "0.1", default-features = false }
-nostd-print = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+nostd-print = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
 parking_lot = { version = "0.12.1", features = ["send_guard"] }
-reverie = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944", package = "reverie-core" }
-reverie-memory = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
-reverie-inguest = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944", default-features = false, features = ["coordinator-rpc"] }
-reverie-rpc = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
-reverie-rpc-transport = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+reverie = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832", package = "reverie-core" }
+reverie-memory = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
+reverie-inguest = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832", default-features = false, features = ["coordinator-rpc"] }
+reverie-rpc = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
+reverie-rpc-transport = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
 reverie-sabre-stats = { version = "0.5.4", path = "../reverie-sabre-stats" }
 reverie-sabre-macros = { version = "0.5.4", path = "../reverie-sabre-macros" }
-reverie-syscalls = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "b5819d62a440bdb336d1db042972711881c0f944" }
+reverie-syscalls = { version = "0.5.4", git = "https://github.com/rrnewton/reverie.git", rev = "42b59ad872680b7e7815fc7a88ed76ca3a233832" }
 serde = { version = "1.0.185", features = ["derive", "rc"] }
 syscalls = { version = "0.6.7", features = ["serde"] }
 
