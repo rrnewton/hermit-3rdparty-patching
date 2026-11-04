@@ -90,9 +90,13 @@ jobs:
         # Guest-running integration targets (tests/sabre_examples.rs needs a
         # core HERMIT_BIN and executes guests) belong to the privileged
         # E2E lane; hosted unit scope is lib/bin tests.
-        run: cargo test --locked --lib --bins -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- --skip cache_directory_is_private_and_not_a_symlink
-      - name: Namespace-dependent test (root)
-        run: sudo env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" "RUSTUP_HOME=$RUSTUP_HOME" cargo test --locked -p hermit-patching-cli --lib -- --exact e9patch::tests::cache_directory_is_private_and_not_a_symlink
+        run: cargo test --locked --lib --bins -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- --skip cache_directory_is_private_and_not_a_symlink --skip overlay_
+      - name: Namespace-dependent tests (root)
+        # unshare --user --map-root-user is refused to non-root on the
+        # hosted runner; these tests pass locally and as root.
+        run: |
+          sudo env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" "RUSTUP_HOME=$RUSTUP_HOME" cargo test --locked -p hermit-patching-cli --lib -- --exact e9patch::tests::cache_directory_is_private_and_not_a_symlink
+          sudo env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" "RUSTUP_HOME=$RUSTUP_HOME" cargo test --locked -p reverie-e9patch --lib -- overlay_
       - name: Python tests
         run: |
           if ls tests/*.py >/dev/null 2>&1; then python3 -m pytest tests/ -x -q; fi
