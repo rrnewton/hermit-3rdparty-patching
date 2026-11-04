@@ -227,7 +227,6 @@ unsafe extern "C" fn initialize(
         if let Err(error) = result {
             fail(&format!("e9patch tool initialization failed: {error}"));
         }
-        return;
     }
 }
 
