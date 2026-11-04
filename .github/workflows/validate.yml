@@ -79,6 +79,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: System build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libunwind-dev liblzma-dev cmake zlib1g-dev
       - name: Unit tests
         run: cargo test --workspace --locked
       - name: Python tests
