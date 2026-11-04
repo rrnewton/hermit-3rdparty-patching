@@ -215,6 +215,7 @@ where
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_with_sender(
     mut command: Command,
     config: DetConfig,
