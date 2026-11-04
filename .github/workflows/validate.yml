@@ -84,7 +84,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libunwind-dev liblzma-dev cmake zlib1g-dev
       - name: Unit tests
-        run: cargo test --locked -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples
+        # The cache-directory test needs a mapped-root user namespace,
+        # which the hosted runner refuses to non-root (MapUid EPERM);
+        # it runs as root in the next step instead of being skipped.
+        run: cargo test --locked -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- --skip cache_directory_is_private_and_not_a_symlink
+      - name: Namespace-dependent test (root)
+        run: sudo env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" "RUSTUP_HOME=$RUSTUP_HOME" cargo test --locked -p hermit-patching-cli --lib -- --exact e9patch::tests::cache_directory_is_private_and_not_a_symlink
       - name: Python tests
         run: |
           if ls tests/*.py >/dev/null 2>&1; then python3 -m pytest tests/ -x -q; fi
