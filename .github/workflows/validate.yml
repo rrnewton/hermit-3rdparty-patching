@@ -87,7 +87,10 @@ jobs:
         # The cache-directory test needs a mapped-root user namespace,
         # which the hosted runner refuses to non-root (MapUid EPERM);
         # it runs as root in the next step instead of being skipped.
-        run: cargo test --locked -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- --skip cache_directory_is_private_and_not_a_symlink
+        # Guest-running integration targets (tests/sabre_examples.rs needs a
+        # core HERMIT_BIN and executes guests) belong to the privileged
+        # E2E lane; hosted unit scope is lib/bin tests.
+        run: cargo test --locked --lib --bins -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- --skip cache_directory_is_private_and_not_a_symlink
       - name: Namespace-dependent test (root)
         run: sudo env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" "RUSTUP_HOME=$RUSTUP_HOME" cargo test --locked -p hermit-patching-cli --lib -- --exact e9patch::tests::cache_directory_is_private_and_not_a_symlink
       - name: Python tests
