@@ -347,6 +347,13 @@ where
                         guest.event.set_result(value);
                         None
                     }
+                    DrivenSyscall::DeferredNative { number, args } => {
+                        // Execute natively now that callback borrows have
+                        // ended; this is not an exit, so no exit lifecycle.
+                        let result = unsafe { raw_syscall6(number, args) };
+                        guest.event.set_result(result);
+                        None
+                    }
                     DrivenSyscall::Exit { number, args } => Some((number, args)),
                     DrivenSyscall::ForkChild { .. } => {
                         // The direct AOT host bars process-tree injection
