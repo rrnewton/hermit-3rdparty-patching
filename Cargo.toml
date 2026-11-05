@@ -1,0 +1,15 @@
+# Source-only extension staging; compilation/loader qualification is not implied.
+[workspace]
+resolver = "2"
+members = [
+    "experimental/reverie-host",
+    "experimental/reverie-sabre",
+    "experimental/reverie-sabre-macros",
+    "experimental/reverie-sabre-stats",
+    "experimental/reverie-sabre-strace",
+    "experimental/riptrace",
+    "experimental/riptrace/tool",
+    "reverie-e9patch",
+    "reverie-patching-examples",
+    "hermit-patching-cli",
+]
