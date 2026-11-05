@@ -112,6 +112,9 @@ fi
 
 # --- 5. Python tests, rustfmt, clippy (mirrors hosted) ---
 if ls tests/*.py >/dev/null 2>&1; then python3 -m pytest tests/ -x -q; fi
+# Local-only: this route's own regression tests live in ci/ (the hosted
+# runner has no pytest for a tests/ placement; see the file header).
+python3 -m pytest ci/test_validate_local.py -q
 cargo fmt --all -- --check
 cargo clippy --locked -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- -D warnings
 

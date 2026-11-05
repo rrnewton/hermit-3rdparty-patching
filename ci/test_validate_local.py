@@ -4,7 +4,10 @@ The route claims to mirror .github/workflows/validate.yml step for step.
 These tests pin that claim and the regressions a review already caught
 once: a dead HERMIT_WRAPPER export with a safehermit claim nothing read,
 and a final owned-Nextest call whose required inputs the script never
-set. They run under the hosted workflow's Python step as well.
+set. They live in ci/ with the repo's other Python tests: the hosted
+workflow's tests/ Python step has no pytest installed on the runner,
+so a tests/ placement would break that step instead of running.
+ci/validate-local.sh runs this file explicitly.
 """
 
 import re
