@@ -5,9 +5,10 @@ These tests pin that claim and the regressions a review already caught
 once: a dead HERMIT_WRAPPER export with a safehermit claim nothing read,
 and a final owned-Nextest call whose required inputs the script never
 set. They live in ci/ with the repo's other Python tests: the hosted
-workflow's tests/ Python step has no pytest installed on the runner,
-so a tests/ placement would break that step instead of running.
-ci/validate-local.sh runs this file explicitly.
+workflow's Python step triggers only on top-level tests/*.py and
+installs no pytest, so neither this file nor the tests/e9patch
+subdirectory corpus runs hosted; ci/validate-local.sh collects both
+(find-based) and runs this file explicitly.
 """
 
 import re
@@ -55,6 +56,8 @@ def test_mirrors_hosted_validate_steps() -> None:
         "python3 -m pytest tests/ -x -q",
         "cargo fmt --all -- --check",
         "cargo clippy --locked -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- -D warnings",
+        "cargo test --locked -p reverie-sabre --lib",
+        "cargo clippy --locked -p reverie-sabre -- -D warnings",
     ):
         assert mirrored in text, f"hosted step not mirrored locally: {mirrored}"
 

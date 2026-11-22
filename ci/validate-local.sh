@@ -25,8 +25,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-HERMIT_PIN=${HERMIT_PIN:-890f7e672ecd351644f53ab07fc78ad88a76af61}
-REVERIE_PIN=${REVERIE_PIN:-42b59ad872680b7e7815fc7a88ed76ca3a233832}
+HERMIT_PIN=${HERMIT_PIN:-795e4d9a7ebf9ed79ef90db40e5cd2a0acdf0126}
+REVERIE_PIN=${REVERIE_PIN:-3271496c72233bf5310905a40431ae83e18c1bd9}
 CORE_HERMIT=.core/hermit
 CORE_REVERIE=.core/reverie
 
@@ -93,29 +93,45 @@ checkout_pin "$CORE_REVERIE" https://github.com/rrnewton/reverie.git "$REVERIE_P
 grep -rq "$HERMIT_PIN" --include=Cargo.toml .
 grep -rq "$REVERIE_PIN" --include=Cargo.toml .
 
-# --- 4. unit tests (hosted scope/skips), namespace test, overlay ---
-cargo test --locked --lib --bins -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- --skip cache_directory_is_private_and_not_a_symlink --skip overlay_
+# --- 4/5. Tests, Python, rustfmt, clippy. Each step is recorded by name
+# and the script exits non-zero at the END if any failed, so one red
+# crate (e.g. reverie-e9patch not compiling) cannot hide another crate's
+# results behind set -e's early exit. Failing steps are reported by name.
+FAILURES=()
+run_step() {
+    local name="$1"; shift
+    echo "validate-local: step: $name"
+    "$@" || FAILURES+=("$name")
+}
+
+run_step "unit tests (cli/e9patch/examples)" cargo test --locked --lib --bins -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- --skip cache_directory_is_private_and_not_a_symlink --skip overlay_
+run_step "reverie-sabre tests" cargo test --locked -p reverie-sabre --lib
 
 CACHE_TEST=e9patch::tests::cache_directory_is_private_and_not_a_symlink
 if [[ "$(id -u)" -eq 0 ]]; then
-    cargo test --locked -p hermit-patching-cli --lib -- --exact "$CACHE_TEST"
+    run_step "namespace cache test" cargo test --locked -p hermit-patching-cli --lib -- --exact "$CACHE_TEST"
     # Local-only: the overlay_* fixtures pass where unshare child exec
     # is permitted (the hosted sandbox refuses it even as root).
-    cargo test --locked -p reverie-e9patch --lib -- overlay_
+    run_step "overlay fixtures" cargo test --locked -p reverie-e9patch --lib -- overlay_
 elif sudo -n true 2>/dev/null; then
-    sudo env "PATH=$PATH" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" cargo test --locked -p hermit-patching-cli --lib -- --exact "$CACHE_TEST"
-    cargo test --locked -p reverie-e9patch --lib -- overlay_
+    run_step "namespace cache test" sudo env "PATH=$PATH" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" cargo test --locked -p hermit-patching-cli --lib -- --exact "$CACHE_TEST"
+    run_step "overlay fixtures" cargo test --locked -p reverie-e9patch --lib -- overlay_
 else
     echo "validate-local: the namespace test needs root or passwordless sudo (hosted runs it as root)" >&2
-    exit 2
+    FAILURES+=("namespace cache test (needs root or passwordless sudo)")
 fi
 
-# --- 5. Python tests, rustfmt, clippy (mirrors hosted) ---
-if ls tests/*.py >/dev/null 2>&1; then python3 -m pytest tests/ -x -q; fi
+if find tests -name '*.py' -print -quit 2>/dev/null | grep -q .; then run_step "python tests" python3 -m pytest tests/ -x -q; fi
 # Local-only: this route's own regression tests live in ci/ (the hosted
 # runner has no pytest for a tests/ placement; see the file header).
-python3 -m pytest ci/test_validate_local.py -q
-cargo fmt --all -- --check
-cargo clippy --locked -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- -D warnings
+run_step "ci python tests" python3 -m pytest ci/test_validate_local.py -q
+run_step "rustfmt" cargo fmt --all -- --check
+run_step "clippy (cli/e9patch/examples)" cargo clippy --locked -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- -D warnings
+run_step "reverie-sabre clippy" cargo clippy --locked -p reverie-sabre -- -D warnings
 
+if ((${#FAILURES[@]})); then
+    echo "validate-local: FAILED steps:" >&2
+    printf '  - %s\n' "${FAILURES[@]}" >&2
+    exit 1
+fi
 echo "validate-local: OK (hosted-mirrored steps; owned-Nextest retained lane not included)"

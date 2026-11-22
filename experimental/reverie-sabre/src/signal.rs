@@ -552,10 +552,10 @@ fn dispatch_default_with(signal: libc::c_int, before_terminate: impl FnOnce()) {
         assert_eq!(0, libc::sigemptyset(&mut default_action.sa_mask));
         assert_eq!(0, libc::sigaction(signal, &default_action, ptr::null_mut()));
 
-        let pid = syscalls::raw::syscall0(syscalls::Sysno::getpid);
-        let tid = syscalls::raw::syscall0(syscalls::Sysno::gettid);
+        let pid = syscalls::raw::syscall0(syscalls::Sysno::getpid.id() as usize);
+        let tid = syscalls::raw::syscall0(syscalls::Sysno::gettid.id() as usize);
         let _ = syscalls::raw::syscall3(
-            syscalls::Sysno::tgkill,
+            syscalls::Sysno::tgkill.id() as usize,
             pid as usize,
             tid as usize,
             signal as usize,

@@ -223,7 +223,7 @@ pub(crate) fn sys_close_range(
     let result = unsafe {
         reverie_inguest::reserved_fds::close_range_sparing(&args, &reserved, |number, a| {
             syscalls::raw::syscall6(
-                Sysno::from(number as i32),
+                number as usize,
                 a[0] as usize,
                 a[1] as usize,
                 a[2] as usize,
