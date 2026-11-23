@@ -193,9 +193,8 @@ unsafe fn dispatch_frame(
     // the frame for the Guest; only this local classification narrows.
     // Numbers the table cannot name are answered ENOSYS by the
     // registered ToolHost itself (its own decode), matching Linux's
-    // sys_ni_syscall. (The old bridge's failure was not this check:
-    // its checked conversion answered ENOSYS from the bridge, and the
-    // pre-check Sysno::from conversion could panic in this callback.)
+    // sys_ni_syscall. (The pre-check Sysno::from conversion could
+    // panic in this callback.)
     let number = unsafe { (&*frame).raw_syscall_number() };
     if reverie_inguest::trap::is_rt_sigreturn(number) {
         return 2;
