@@ -16,6 +16,10 @@
 #     HERMIT_EXTENSION_ROOT, HERMIT_NEXTEST_PROJECT) that this script
 #     does not generate. Run ci/run-owned-nextest.sh directly with
 #     those set when that lane is wanted.
+#   - Python collection differs deliberately: this route uses find
+#     and runs the 10-test tests/e9patch subdirectory corpus, while
+#     hosted keeps its top-level tests/*.py guard and installs no
+#     pytest, so that corpus does not run hosted.
 # This script invokes no hermit binary, so there is no safehermit
 # routing to wire; the core checkouts are used only for the pin grep
 # and as build sources, exactly as in the hosted workflow.
