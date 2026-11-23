@@ -117,7 +117,18 @@ fn build_sabre(source: &Path, build: &Path, libelf: &Path, libelf_link: &Path) -
         .arg("-B")
         .arg(build)
         .arg("-DCMAKE_BUILD_TYPE=Release")
-        .arg(format!("-DCMAKE_C_FLAGS=-I{}", libelf.display()))
+        // Workaround, do not edit vendored SaBRe: loader/premain.c calls
+        // real_syscall() without including plugins/real_syscall.h (only
+        // ld_sc_handler.c includes it), which -Werror rejects as an implicit
+        // declaration. Force-include the guarded prototype header for the
+        // SaBRe build only; upstreaming the missing #include to SaBRe is
+        // tracked separately so the vendored tree and its REVISION marker
+        // stay pristine.
+        .arg(format!(
+            "-DCMAKE_C_FLAGS=-I{} -include {}/includes/plugins/real_syscall.h",
+            libelf.display(),
+            source.display()
+        ))
         .arg(format!(
             "-DCMAKE_EXE_LINKER_FLAGS=-L{}",
             libelf_link.display()

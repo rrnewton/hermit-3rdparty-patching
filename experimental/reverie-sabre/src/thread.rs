@@ -103,13 +103,13 @@ fn clear_forking_flag(atomic_repr: &AtomicStateRepr, order: Ordering) -> StateRe
 /// Convenience function for getting the current thread id via a syscall
 fn thread_id_syscall() -> u32 {
     // Unsafe unwrap is okay here because this syscall is guaranteed not to fail
-    unsafe { syscall0(Sysno::gettid) as u32 }
+    unsafe { syscall0(Sysno::gettid.id() as usize) as u32 }
 }
 
 /// Convenience function for getting the current process id via a syscall
 fn process_id_syscall() -> u32 {
     // Unsafe unwrap is okay here because this syscall is guaranteed not to fail
-    unsafe { syscall0(Sysno::getpid) as u32 }
+    unsafe { syscall0(Sysno::getpid.id() as usize) as u32 }
 }
 
 /// Called by the `thread_local` macro (during TLS initialization) to add the

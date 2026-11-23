@@ -18,8 +18,8 @@ use detcore_model::summary::RunSummary;
 use hermit::Error;
 use hermit::app::backend_hook::{
     BackendAdapter, CapturedOutput, ContainerScope, CoordinatorTracing, EvidenceRequirement,
-    ExecutableOverlay, Execute, Execution, Mode, Observation, PairEvidence, Prepare,
-    VerificationLogTransport,
+    ExecutableOverlay, Execute, Execution, Mode, Observation, PairEvidence, Prepare, StaticOptions,
+    UntracedCode, VerificationLogTransport, require_untraced_code,
 };
 use reverie::SiteCounters;
 use reverie::process::Command;
@@ -54,8 +54,12 @@ impl BackendAdapter for E9patchAdapter {
     const EVIDENCE: EvidenceRequirement = EvidenceRequirement::Common;
     const CAPABILITIES: reverie::BackendCapabilities = reverie::BackendCapabilities::PTRACE;
     const LOG_TRANSPORT: VerificationLogTransport = VerificationLogTransport::CoordinatorTracing;
+    // The real runtime below is core ptrace, whose private page lets the
+    // guest's syscalls past the tracer untraced.
+    const UNTRACED_CODE: UntracedCode = UntracedCode::ReveriePtracePrivatePage;
 
     type Options = ();
+    type RuntimeInputs = ();
     type Session = Session;
     type Pending = ();
     type Facts = ();
@@ -109,7 +113,16 @@ impl BackendAdapter for E9patchAdapter {
         Ok(())
     }
 
-    fn prepare(&self, (): (), mut request: Prepare<'_>) -> Result<Session, Error> {
+    fn admit_static_options(&self, _: &StaticOptions<'_>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn ensure_runtime_inputs(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn prepare(&self, (): (), (): (), mut request: Prepare<'_>) -> Result<Session, Error> {
+        require_untraced_code::<Self>(&request.config())?;
         anyhow::ensure!(
             request.container().uses_namespace(),
             "e9patch requires mount namespaces to overlay the rewritten ELF at its original guest path"

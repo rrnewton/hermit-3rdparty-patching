@@ -172,8 +172,32 @@ unsafe extern "C" fn reverie_e9patch_dispatch_aot(
     frame: *mut InjectedSyscallFrame,
     trap_rflags: u64,
 ) -> u64 {
-    let number = unsafe { (&*frame).syscall_number() };
-    if number == reverie::syscalls::Sysno::rt_sigreturn {
+    unsafe { dispatch_frame(frame, trap_rflags, reverie_inguest::trap::dispatch_direct) }
+}
+
+/// Dispatch body, parameterized on the dispatch function so tests can
+/// capture the exact number handed to the host.
+///
+/// # Safety
+/// Same contract as the callback: `frame` must point to the writable
+/// e9tool `state` frame for the duration of this call.
+unsafe fn dispatch_frame(
+    frame: *mut InjectedSyscallFrame,
+    trap_rflags: u64,
+    dispatch: fn(i64, [u64; 6], u64) -> i64,
+) -> u64 {
+    // The tail check and the dispatched number use the kernel's number
+    // (the low 32 bits of rax, sign-extended): Linux ignores the upper
+    // bits, so a high-bit rt_sigreturn is still a tail return and a
+    // high-bit getpid still names getpid. The full register stays in
+    // the frame for the Guest; only this local classification narrows.
+    // Numbers the table cannot name are answered ENOSYS by the
+    // registered ToolHost itself (its own decode), matching Linux's
+    // sys_ni_syscall. (The old bridge's failure was not this check:
+    // its checked conversion answered ENOSYS from the bridge, and the
+    // pre-check Sysno::from conversion could panic in this callback.)
+    let number = unsafe { (&*frame).raw_syscall_number() };
+    if reverie_inguest::trap::is_rt_sigreturn(number) {
         return 2;
     }
     let (args, instruction_pointer) = {
@@ -187,8 +211,7 @@ unsafe extern "C" fn reverie_e9patch_dispatch_aot(
         (args, instruction_pointer)
     };
     let _scope = CurrentFrameScope::enter(frame, trap_rflags);
-    let result =
-        reverie_inguest::trap::dispatch_direct(number.id() as i64, args, instruction_pointer);
+    let result = dispatch(i64::from(number as i32), args, instruction_pointer);
     // SAFETY: dispatch has returned and no Tool borrow of the current frame is
     // live; the trampoline still owns the same unique frame.
     unsafe { (&mut *frame).set_result(result) };
@@ -251,6 +274,50 @@ mod tests {
         assert_eq!(words[15] as i64, -i64::from(libc::ENOSYS));
         assert_eq!(words[14], rip + 2);
         assert_eq!(words[5], 0x202);
+    }
+
+    #[test]
+    fn high_bit_rt_sigreturn_requests_direct_tail_execution_without_mutation() {
+        // Linux reads (int)rax: 0x1_0000_000f IS rt_sigreturn and must take
+        // the tail path, exactly like the plain number above.
+        let mut words = [0xfeed_face_u64; 18];
+        words[15] = 0x1_0000_0000 | libc::SYS_rt_sigreturn as u64;
+        let original = words;
+
+        unsafe {
+            assert_eq!(
+                reverie_e9patch_dispatch_aot(words.as_mut_ptr().cast(), 0x202),
+                2
+            );
+        }
+
+        assert_eq!(words, original);
+    }
+
+    #[test]
+    fn high_bit_getpid_dispatches_the_kernel_number() {
+        // Capture the number actually handed to the host: with raw
+        // dispatch this captures 0x1_0000_0000|SYS_getpid and FAILS,
+        // which is the regression this test exists to catch (Reverie's
+        // docs tell bridges to pass the raw value).
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static CAPTURED: AtomicI64 = AtomicI64::new(i64::MIN);
+        fn capture(number: i64, _args: [u64; 6], _ip: u64) -> i64 {
+            CAPTURED.store(number, Ordering::SeqCst);
+            4242
+        }
+        let rip = 0x401000;
+        let mut words = [0_u64; 18];
+        words[15] = 0x1_0000_0000 | libc::SYS_getpid as u64;
+        words[17] = rip;
+
+        unsafe {
+            assert_eq!(dispatch_frame(words.as_mut_ptr().cast(), 0x202, capture), 1);
+        }
+
+        assert_eq!(CAPTURED.load(Ordering::SeqCst), i64::from(libc::SYS_getpid));
+        assert_eq!(words[15] as i64, 4242);
+        assert_eq!(words[14], rip + 2);
     }
 
     #[test]

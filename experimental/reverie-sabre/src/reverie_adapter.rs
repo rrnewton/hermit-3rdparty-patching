@@ -157,7 +157,8 @@ where
         )
         .with_tail(&tail);
 
-        shared_result(drive_tool_syscall(&self.tool, &mut guest, syscall, &tail))
+        let driven = drive_tool_syscall(&self.tool, &mut guest, syscall, &tail);
+        finish_after_guest(guest, driven)
     }
 
     /// Allocates the shared tool's state for a newly observed guest thread.
@@ -660,7 +661,8 @@ where
         )
         .with_tail(&tail);
 
-        shared_result(drive_tool_syscall(&self.tool, &mut guest, syscall, &tail))
+        let driven = drive_tool_syscall(&self.tool, &mut guest, syscall, &tail);
+        finish_after_guest(guest, driven)
     }
 
     /// Allocates remote RPC and tool state for a newly observed guest thread.
@@ -889,16 +891,108 @@ fn remote_rpc_error(error: RpcError) -> Errno {
     crate::eprintln!("reverie-sabre: coordinator RPC failed: {error}");
     Errno::EIO
 }
-fn shared_result(result: DrivenSyscall) -> Result<usize, Errno> {
-    match result {
-        DrivenSyscall::Result(value) => Errno::from_ret(value as usize),
-        DrivenSyscall::Fatal(error) => {
-            crate::eprintln!("reverie-sabre: shared tool failed: {error}");
-            Err(Errno::EIO)
+
+/// The only way dispatch finishes a driven syscall: takes the Guest by
+/// value and drops it before finishing, so both dispatch sites end every
+/// Guest borrow before a deferred native operation is applied
+/// (SyscallOutcome::DeferredNative contract). The caller's thread-state
+/// guard stays held across the call, as for Guest::inject execution today.
+fn finish_after_guest<T: ReverieTool>(
+    guest: SabreGuest<'_, '_, T>,
+    driven: DrivenSyscall,
+) -> Result<usize, Errno> {
+    fn finish_driven(result: DrivenSyscall) -> Result<usize, Errno> {
+        match result {
+            DrivenSyscall::Result(value) => Errno::from_ret(value as usize),
+            DrivenSyscall::DeferredNative { number, args } => {
+                // SAFETY: the Guest was dropped above before this is
+                // reached, and deferred args are guest values/pointers by
+                // the contract on apply_deferred_native.
+                unsafe { apply_deferred_native(number, args) }
+            }
+            DrivenSyscall::Fatal(error) => {
+                crate::eprintln!("reverie-sabre: shared tool failed: {error}");
+                Err(Errno::EIO)
+            }
+            DrivenSyscall::Exit { .. } | DrivenSyscall::ForkChild { .. } => {
+                crate::eprintln!("reverie-sabre: unsupported shared tool transition");
+                Err(Errno::EIO)
+            }
         }
-        DrivenSyscall::Exit { .. } | DrivenSyscall::ForkChild { .. } => {
-            crate::eprintln!("reverie-sabre: unsupported shared tool transition");
-            Err(Errno::EIO)
+    }
+    drop(guest);
+    finish_driven(driven)
+}
+
+/// The syscall the kernel will dispatch for a raw deferred number:
+/// classification on the low 32 bits as an int (entry_64.S `movslq`;
+/// callbacks.rs uses the same conversion). Classifying all 64 bits would
+/// send high-bit aliases of named syscalls (clone, execve, close on a
+/// protected fd) down the raw branch, bypassing every special case in
+/// `SyscallExt::call`.
+fn kernel_sysno(number: i64) -> Option<Sysno> {
+    Sysno::new((number as i32 as u32) as usize)
+}
+
+/// Applies a deferred native syscall through SaBRe's one native-execution
+/// path. A number the type-safe table can name goes through
+/// [`SyscallExt::call`] (exec/signal virtualization, protected
+/// descriptors), with the same process-control refusal `Guest::inject`
+/// applies: clone-family and exit calls run only through the special
+/// injectors, never here. Only a number the table cannot name — which no
+/// SaBRe special case can apply to — executes raw, so the kernel answers.
+///
+/// # Safety
+/// Every pointer argument must reference guest memory (or storage the
+/// caller keeps alive) satisfying the kernel ABI for the duration of the
+/// call. In particular a pointer into Tool stack scratch (`Guest::stack`
+/// arenas) does NOT satisfy this: that arena is owned by the Tool future,
+/// which `drive_syscall` has already dropped before this runs. No current
+/// producer can defer (SabreGuest never stages a deferred tail action);
+/// whoever adds one must meet this precondition.
+unsafe fn apply_deferred_native(number: i64, args: [u64; 6]) -> Result<usize, Errno> {
+    match kernel_sysno(number) {
+        Some(sysno) => {
+            if matches!(
+                sysno,
+                Sysno::clone
+                    | Sysno::clone3
+                    | Sysno::fork
+                    | Sysno::vfork
+                    | Sysno::exit
+                    | Sysno::exit_group
+            ) {
+                crate::eprintln!(
+                    "reverie-sabre: deferred process-control syscall {sysno:?} refused by name"
+                );
+                return Err(Errno::ENOSYS);
+            }
+            let syscall = Syscall::from_raw(
+                sysno,
+                SyscallArgs::new(
+                    args[0] as usize,
+                    args[1] as usize,
+                    args[2] as usize,
+                    args[3] as usize,
+                    args[4] as usize,
+                    args[5] as usize,
+                ),
+            );
+            unsafe { syscall.call() }
+        }
+        None => {
+            let result = unsafe {
+                syscalls::raw::syscall6(
+                    number as usize,
+                    args[0] as usize,
+                    args[1] as usize,
+                    args[2] as usize,
+                    args[3] as usize,
+                    args[4] as usize,
+                    args[5] as usize,
+                )
+            };
+            Errno::from_ret(result)
         }
     }
 }
@@ -919,7 +1013,7 @@ fn bypass_tool(
 }
 
 fn current_pid() -> Pid {
-    let pid = unsafe { syscalls::raw::syscall0(syscalls::Sysno::getpid) };
+    let pid = unsafe { syscalls::raw::syscall0(syscalls::Sysno::getpid.id() as usize) };
     Pid::from_raw(pid as i32)
 }
 
@@ -938,7 +1032,7 @@ fn root_process_pid() -> Pid {
 }
 
 fn current_tid() -> Pid {
-    let tid = unsafe { syscalls::raw::syscall0(syscalls::Sysno::gettid) };
+    let tid = unsafe { syscalls::raw::syscall0(syscalls::Sysno::gettid.id() as usize) };
     Pid::from_raw(tid as i32)
 }
 
@@ -1106,7 +1200,7 @@ where
         if self.pid == root_process_pid() {
             None
         } else {
-            let ppid = unsafe { syscalls::raw::syscall0(syscalls::Sysno::getppid) };
+            let ppid = unsafe { syscalls::raw::syscall0(syscalls::Sysno::getppid.id() as usize) };
             (ppid != 0).then(|| Pid::from_raw(ppid as i32))
         }
     }
@@ -2439,6 +2533,162 @@ mod tests {
         assert_eq!(
             adapter.handle_syscall(syscall),
             Ok(std::process::id() as usize)
+        );
+    }
+
+    #[derive(Default)]
+    struct DeferredTool;
+
+    #[reverie::tool]
+    impl ReverieTool for DeferredTool {
+        type GlobalState = ();
+        type ThreadState = ();
+    }
+
+    fn deferred_test_guest<'a>(
+        state: &'a mut Option<()>,
+        rpc: &'a SabreRpc<'a, DeferredTool>,
+    ) -> SabreGuest<'a, 'static, DeferredTool> {
+        SabreGuest::new(
+            Pid::from_raw(std::process::id() as i32),
+            Pid::from_raw(std::process::id() as i32),
+            state,
+            rpc,
+            None,
+            None,
+            None,
+        )
+    }
+
+    fn deferred_rpc() -> SabreRpc<'static, DeferredTool> {
+        SabreRpc {
+            tid: Pid::from_raw(std::process::id() as i32),
+            global_state: &(),
+            config: &(),
+        }
+    }
+
+    #[test]
+    fn deferred_native_executes_the_exact_deferred_syscall() {
+        // The deferred operation runs for real after Guest borrows end:
+        // getpid deferred by number must return this process's pid.
+        let number = i64::from(Sysno::getpid.id());
+        assert_eq!(
+            finish_after_guest(
+                deferred_test_guest(&mut Some(()), &deferred_rpc()),
+                DrivenSyscall::DeferredNative {
+                    number,
+                    args: [0; 6],
+                }
+            ),
+            Ok(std::process::id() as usize)
+        );
+    }
+
+    #[test]
+    fn deferred_native_passes_every_argument_position() {
+        // mmap a temp file at a nonzero offset: every argument position
+        // (addr, len, prot, flags, fd, offset) affects the result, so a
+        // rotated/dropped-args mutant fails. Checked by mapped content,
+        // then a deferred pread64 covers its length argument too.
+        use std::io::Write as _;
+        let mut file = tempfile::tempfile().unwrap();
+        let mut contents = vec![0u8; 8192];
+        contents[4096..4104].copy_from_slice(b"sabre-df");
+        file.write_all(&contents).unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&file) as u64;
+        let addr = finish_after_guest(
+            deferred_test_guest(&mut Some(()), &deferred_rpc()),
+            DrivenSyscall::DeferredNative {
+                number: i64::from(Sysno::mmap.id()),
+                args: [
+                    0,
+                    4096,
+                    (libc::PROT_READ) as u64,
+                    (libc::MAP_PRIVATE) as u64,
+                    fd,
+                    4096,
+                ],
+            },
+        )
+        .expect("deferred mmap must succeed");
+        assert!(addr > 4096, "mmap returned {addr:#x}");
+        // SAFETY: addr is a live 4096-byte private mapping of the temp file
+        // created above; reading its first 8 bytes stays inside it.
+        let mapped = unsafe { std::slice::from_raw_parts(addr as *const u8, 8) };
+        assert_eq!(mapped, b"sabre-df");
+        let mut buf = [0u8; 8];
+        let read = finish_after_guest(
+            deferred_test_guest(&mut Some(()), &deferred_rpc()),
+            DrivenSyscall::DeferredNative {
+                number: i64::from(Sysno::pread64.id()),
+                args: [fd, buf.as_mut_ptr() as u64, 8, 4096, 0, 0],
+            },
+        )
+        .expect("deferred pread64 must succeed");
+        assert_eq!(read, 8);
+        assert_eq!(&buf, b"sabre-df");
+        let unmapped = finish_after_guest(
+            deferred_test_guest(&mut Some(()), &deferred_rpc()),
+            DrivenSyscall::DeferredNative {
+                number: i64::from(Sysno::munmap.id()),
+                args: [addr as u64, 4096, 0, 0, 0, 0],
+            },
+        )
+        .expect("deferred munmap must succeed");
+        assert_eq!(unmapped, 0);
+    }
+
+    #[test]
+    fn kernel_sysno_classifies_on_the_low_32_bits() {
+        // Fails if classification ever regresses to all 64 bits: every
+        // high-bit alias below must still name its syscall, so the
+        // process-control refusals and SyscallExt special cases apply.
+        for sysno in [
+            Sysno::clone,
+            Sysno::clone3,
+            Sysno::vfork,
+            Sysno::execve,
+            Sysno::execveat,
+            Sysno::close,
+        ] {
+            assert_eq!(
+                kernel_sysno(0x1_0000_0000 | i64::from(sysno.id())),
+                Some(sysno),
+                "{sysno:?}"
+            );
+        }
+        assert_eq!(kernel_sysno(9999), None);
+    }
+
+    #[test]
+    fn deferred_native_unknown_number_returns_enosys() {
+        // High bits set: the kernel dispatches on the low 32 bits, so this
+        // classifies as getpid under the kernel's low-32-bits decoding
+        // (a raw clone/exec alias would bypass every special case).
+        assert_eq!(
+            finish_after_guest(
+                deferred_test_guest(&mut Some(()), &deferred_rpc()),
+                DrivenSyscall::DeferredNative {
+                    number: 0x1_0000_0000 | i64::from(Sysno::getpid.id()),
+                    args: [0; 6],
+                }
+            ),
+            Ok(std::process::id() as usize)
+        );
+        // Smoke check only: an unnamable number returns ENOSYS. This cannot
+        // distinguish the kernel's ENOSYS from a backend-made one, and no
+        // current producer can deliver an unnamable number (deferred
+        // numbers come from SyscallInfo::into_parts, which yields a Sysno).
+        assert_eq!(
+            finish_after_guest(
+                deferred_test_guest(&mut Some(()), &deferred_rpc()),
+                DrivenSyscall::DeferredNative {
+                    number: 9999,
+                    args: [0; 6],
+                }
+            ),
+            Err(Errno::ENOSYS)
         );
     }
 

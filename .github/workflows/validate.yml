@@ -18,8 +18,8 @@ on:
   workflow_dispatch:
 
 env:
-  HERMIT_PIN: 890f7e672ecd351644f53ab07fc78ad88a76af61
-  REVERIE_PIN: 42b59ad872680b7e7815fc7a88ed76ca3a233832
+  HERMIT_PIN: 795e4d9a7ebf9ed79ef90db40e5cd2a0acdf0126
+  REVERIE_PIN: 3271496c72233bf5310905a40431ae83e18c1bd9
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -92,6 +92,7 @@ jobs:
         # E2E lane; hosted unit scope is lib/bin tests.
         run: cargo test --locked --lib --bins -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- --skip cache_directory_is_private_and_not_a_symlink --skip overlay_
       - name: Namespace-dependent tests (root)
+        if: ${{ !cancelled() }}
         # unshare --user --map-root-user is refused to non-root on the
         # hosted runner; these tests pass locally and as root.
         run: |
@@ -101,9 +102,20 @@ jobs:
           # EACCES); they pass locally and in ci/validate-local.sh, and
           # are excluded from hosted scope as a recorded residual.
       - name: Python tests
+        if: ${{ !cancelled() }}
         run: |
-          if ls tests/*.py >/dev/null 2>&1; then python3 -m pytest tests/ -x -q; fi
+          if ls tests/*.py >/dev/null 2>&1; then python3 -m pytest tests/ -x -q; fi # hosted: no pytest for subdir corpus (validate-local runs it)
       - name: rustfmt
+        if: ${{ !cancelled() }}
         run: cargo fmt --all -- --check
       - name: clippy
+        if: ${{ !cancelled() }}
         run: cargo clippy --locked -p hermit-patching-cli -p reverie-e9patch -p reverie-patching-examples -- -D warnings
+      # reverie-sabre as its OWN commands: e9patch's compile state must not
+      # be able to hide its test suite behind a combined invocation.
+      - name: reverie-sabre tests
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p reverie-sabre --lib
+      - name: reverie-sabre clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked -p reverie-sabre -- -D warnings

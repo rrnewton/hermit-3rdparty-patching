@@ -13,3 +13,39 @@ members = [
     "reverie-patching-examples",
     "hermit-patching-cli",
 ]
+
+# Unify every Reverie crate on the canonical Reverie git at the pin, so
+# the graph carries one instance of each (the Hermit git source otherwise
+# supplies its own path copies through the reverie submodule). Direct
+# dependencies declare facebookexperimental sources; this table maps the
+# Hermit-sourced copies onto the same canonical Reverie revision, which
+# always follows Hermit's reverie gitlink. Generated from the pinned
+# Reverie workspace member list; regenerate at every pin bump.
+[patch."https://github.com/facebookexperimental/hermit"]
+nostd-print = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-rpc-macros = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-rpc = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+riptrace-rpc = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+linux-ns-model = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-core = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-inguest = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-examples = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-kvm = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-kvm-core = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-linux-provider = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-linuxemu = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-liteinst = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-liteinst-artifact = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-liteinst-preload = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-loader = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-memory = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-process = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-proc-grammar = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-linuxemu-ext-procfs = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-ptrace = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-rpc-transport = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-signal = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-syscalls = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-test-support = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+reverie-util = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }
+safeptrace = { git = "https://github.com/facebookexperimental/reverie.git", rev = "3271496c72233bf5310905a40431ae83e18c1bd9" }

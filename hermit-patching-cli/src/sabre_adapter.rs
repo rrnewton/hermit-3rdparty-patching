@@ -15,11 +15,12 @@ use std::sync::Arc;
 use hermit::Error;
 use hermit::app::backend_hook::{
     BackendAdapter, CapturedOutput, ContainerScope, CoordinatorTracing, EvidenceRequirement,
-    Execute, Execution, Mode, Observation, PairEvidence, Prepare, VerificationLogTransport,
+    Execute, Execution, Mode, Observation, PairEvidence, Prepare, StaticOptions, UntracedCode,
+    VerificationLogTransport, require_untraced_code,
 };
 use reverie::process::Command;
 
-use crate::sabre_artifacts::SabreArtifacts;
+use crate::sabre_artifacts::{AbsentCohort, SabreArtifacts};
 use crate::{sabre_physical, sabre_ptrace};
 
 pub struct SabreAdapter;
@@ -48,8 +49,12 @@ impl BackendAdapter for SabreAdapter {
     const EVIDENCE: EvidenceRequirement = EvidenceRequirement::Common;
     const CAPABILITIES: reverie::BackendCapabilities = reverie::BackendCapabilities::SABRE;
     const LOG_TRANSPORT: VerificationLogTransport = VerificationLogTransport::InGuestSocket;
+    // The backstop tracer is not reverie-ptrace; no guest code is let
+    // through untraced on this runtime.
+    const UNTRACED_CODE: UntracedCode = UntracedCode::None;
 
     type Options = ();
+    type RuntimeInputs = Arc<SabreArtifacts>;
     type Session = Session;
     type Pending = sabre_ptrace::PathEvidence;
     type Facts = sabre_ptrace::PathEvidence;
@@ -70,7 +75,40 @@ impl BackendAdapter for SabreAdapter {
         crate::sabre_strace::run_sabre_strace(program, args)
     }
 
-    fn prepare(&self, (): (), mut request: Prepare<'_>) -> Result<Session, Error> {
+    fn admit_static_options(&self, options: &StaticOptions<'_>) -> Result<(), Error> {
+        // Copied verbatim into prepare below. The repeated refusal is
+        // required to remain there as defense in depth; its later
+        // position alone does not satisfy the early ordering.
+        if options.engagement_path().is_some() {
+            anyhow::bail!(
+                "--backend-engagement-json is not available for SaBRe; use HERMIT_SABRE_PATH_EVIDENCE"
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_runtime_inputs(&self) -> Result<Arc<SabreArtifacts>, Error> {
+        SabreArtifacts::from_required_producer_input()
+            .map(Arc::new)
+            .map_err(|error| match error.downcast_ref::<AbsentCohort>() {
+                // Only absence (unset env / named cohort.json itself
+                // missing) is the typed host-prerequisite class; every
+                // identity/integrity failure keeps its current class.
+                Some(absent) => Error::new(hermit::AdapterUnavailable::new(
+                    Self::NAME,
+                    absent.0.clone(),
+                )),
+                None => error,
+            })
+    }
+
+    fn prepare(
+        &self,
+        (): (),
+        artifacts: Arc<SabreArtifacts>,
+        mut request: Prepare<'_>,
+    ) -> Result<Session, Error> {
+        require_untraced_code::<Self>(&request.config())?;
         anyhow::ensure!(
             request.engagement_path().is_none(),
             "--backend-engagement-json is not available for SaBRe; use HERMIT_SABRE_PATH_EVIDENCE"
@@ -81,7 +119,6 @@ impl BackendAdapter for SabreAdapter {
         } else {
             hermit::NamespaceUse::None
         })?;
-        let artifacts = Arc::new(SabreArtifacts::from_required_producer_input()?);
         let ordinary = if matches!(
             request.mode(),
             Mode::VerificationPair | Mode::SavedVerification

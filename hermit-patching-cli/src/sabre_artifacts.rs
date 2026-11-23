@@ -231,11 +231,45 @@ fn require_loader_selection(
     loader.recheck()
 }
 
+/// The required producer cohort is absent (unset env, or the named
+/// cohort.json itself missing). Only this kind maps to the typed
+/// backend-unavailable class; identity/integrity failures of a present
+/// cohort keep their ordinary class.
+#[derive(Debug)]
+pub struct AbsentCohort(pub String);
+
+impl std::fmt::Display for AbsentCohort {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for AbsentCohort {}
+
 impl SabreArtifacts {
     pub fn from_required_producer_input() -> Result<Self, Error> {
-        let input = std::env::var_os(COHORT_ENV)
-            .ok_or_else(|| anyhow::anyhow!("{COHORT_ENV} must name the exact core-engine/shim/loader producer cohort; no current producer is inferred"))?;
+        Self::from_producer_input(std::env::var_os(COHORT_ENV))
+    }
+
+    fn from_producer_input(input: Option<std::ffi::OsString>) -> Result<Self, Error> {
+        let Some(input) = input else {
+            return Err(Error::new(AbsentCohort(format!(
+                "{COHORT_ENV} must name the exact core-engine/shim/loader producer cohort; no current producer is inferred"
+            ))));
+        };
         let input = PathBuf::from(input);
+        // Absence is exactly NotFound from symlink_metadata: a dangling
+        // symlink, EACCES, ENOTDIR and every other metadata error are a
+        // present-but-unusable cohort and keep the ordinary class below.
+        if input.is_absolute()
+            && let Err(error) = fs::symlink_metadata(&input)
+            && error.kind() == std::io::ErrorKind::NotFound
+        {
+            return Err(Error::new(AbsentCohort(format!(
+                "{COHORT_ENV} names a missing cohort file: {}",
+                input.display()
+            ))));
+        }
         ensure!(
             input.is_absolute() && fs::canonicalize(&input)? == input,
             "{COHORT_ENV} must be an absolute canonical path"
@@ -384,6 +418,33 @@ impl SabreArtifacts {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn only_unset_or_notfound_cohort_is_absent() {
+        // Unset env: absent, with the exact current-producer wording.
+        let unset = SabreArtifacts::from_producer_input(None).err().unwrap();
+        assert!(unset.downcast_ref::<AbsentCohort>().is_some());
+        // Named but missing cohort.json (absolute, canonical dir): absent.
+        let directory = tempfile::tempdir().expect("absent directory");
+        let missing = directory.path().join("cohort.json");
+        let absent = SabreArtifacts::from_producer_input(Some(missing.into_os_string()))
+            .err()
+            .unwrap();
+        assert!(absent.downcast_ref::<AbsentCohort>().is_some());
+        // Dangling symlink at that path: present-but-unusable, NOT absent.
+        let dangling = directory.path().join("cohort.json");
+        std::os::unix::fs::symlink(directory.path().join("gone"), &dangling)
+            .expect("dangling cohort link");
+        let present = SabreArtifacts::from_producer_input(Some(dangling.into_os_string()))
+            .err()
+            .unwrap();
+        assert!(present.downcast_ref::<AbsentCohort>().is_none());
+        // Relative path: an ordinary refusal, not absence.
+        let relative = SabreArtifacts::from_producer_input(Some("relative/cohort.json".into()))
+            .err()
+            .unwrap();
+        assert!(relative.downcast_ref::<AbsentCohort>().is_none());
+    }
 
     #[test]
     fn mapping_identity_remains_bound_to_the_hashed_held_file() {

@@ -113,7 +113,9 @@ impl<T> ProcessCell<T> {
     }
 
     pub fn get_or_init(&'static self, init: fn() -> T) -> &'static T {
-        let pid = unsafe { syscalls::raw::syscall0(syscalls::Sysno::getpid) as libc::pid_t };
+        let pid = unsafe {
+            syscalls::raw::syscall0(syscalls::Sysno::getpid.id() as usize) as libc::pid_t
+        };
 
         loop {
             let current = self.current.load(Acquire);
